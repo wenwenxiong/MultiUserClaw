@@ -1,7 +1,11 @@
 """Platform Gateway — main FastAPI application."""
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse, urlunparse
 
+import asyncpg
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,12 +14,52 @@ from app.db.engine import engine
 from app.db.models import Base
 from app.routes import auth, llm, proxy, admin
 
+logger = logging.getLogger(__name__)
+
+
+async def _ensure_database() -> None:
+    """Connect to the default 'postgres' DB and create the target database if missing."""
+    parsed = urlparse(settings.database_url)
+    db_name = parsed.path.lstrip("/")
+    # Build a URL pointing to the default 'postgres' database
+    admin_url = urlunparse(parsed._replace(path="/postgres"))
+    # asyncpg uses postgresql:// not postgresql+asyncpg://
+    admin_url = admin_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+    max_retries = 30
+    for attempt in range(1, max_retries + 1):
+        try:
+            conn = await asyncpg.connect(admin_url)
+            break
+        except (OSError, asyncpg.PostgresError) as exc:
+            if attempt == max_retries:
+                raise RuntimeError(
+                    f"Cannot connect to PostgreSQL after {max_retries} attempts"
+                ) from exc
+            logger.warning("Waiting for PostgreSQL (attempt %d/%d): %s", attempt, max_retries, exc)
+            await asyncio.sleep(2)
+
+    try:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1", db_name
+        )
+        if not exists:
+            # CREATE DATABASE cannot run inside a transaction
+            await conn.execute(f'CREATE DATABASE "{db_name}"')
+            logger.info("Created database '%s'", db_name)
+        else:
+            logger.info("Database '%s' already exists", db_name)
+    finally:
+        await conn.close()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup (use Alembic migrations in production)
+    # Ensure the target database exists before creating tables
+    await _ensure_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database tables verified")
     yield
     await engine.dispose()
 

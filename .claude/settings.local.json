@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(wc:*)",
+      "Bash(python3:*)",
       "Bash(find:*)",
       "Bash(grep:*)",
       "Bash(npm install:*)",
@@ -12,7 +13,18 @@
       "Bash(python -c:*)",
       "Bash(pip install:*)",
       "Bash(npm run build:*)",
-      "Bash(git status:*)"
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(du:*)",
+      "Bash(npx next build:*)",
+      "Bash(pkill:*)"
     ]
   }
 }
