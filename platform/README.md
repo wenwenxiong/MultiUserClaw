@@ -45,6 +45,7 @@ Nanobot Platform 是一个基于 FastAPI 的多租户网关服务，用于管理
 | `PUT /api/admin/users/{user_id}` | 管理员更新用户 |
 | `DELETE /api/admin/users/{user_id}/container` | 管理员删除用户容器 |
 | `GET /api/admin/usage/summary` | 平台使用统计 |
+/api/nanobot代理platform/app/routes/proxy.py的访问
 
 ## 配置说明
 
@@ -84,3 +85,37 @@ python -m app.main
 # 使用 docker-compose（参考项目根目录的 docker-compose.yml）
 docker-compose up -d platform
 ```
+
+## 前端确定用户容器是否启动的原理
+  请求处理流程
+
+  当前端请求 http://192.168.1.160:8080/api/nanobot/sessions/web%3Adefault 时：
+
+  1. 入口：proxy.py
+  请求首先到达 platform/app/routes/proxy.py:31 的 proxy_http 函数：
+
+   @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+   async def proxy_http(path: str, ...):
+       base_url = await _container_url(db, user)  # <-- 关键步骤
+
+  2. 容器状态检查：ensure_running
+  _container_url 调用 ensure_running 函数（platform/app/container/manager.py:86），这个函数会：
+
+   1. 从数据库查询容器记录 - 检查该用户是否有容器记录
+   2. 根据状态处理：
+      - None → 创建新容器
+      - paused → unpause 恢复运行
+      - archived → 重新创建
+      - running → 验证容器实际运行状态
+
+  3. Docker API 实际检查
+  在 ensure_running 中第 114-117 行：
+
+   elif record.status == "running":
+       try:
+           c = client.containers.get(record.docker_id)
+           if c.status != "running":
+               c.start()  # 如果状态不是 running，启动它
+       except DockerNotFound:
+           # 容器被外部删除，重新创建
+           return await create_container(db, user_id)

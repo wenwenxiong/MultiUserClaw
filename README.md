@@ -3,7 +3,7 @@
 基于nanobot改造的轻量级 AI 助手框架，支持多租户隔离部署、多平台渠道接入、工具调用、定时任务和 Web 实时通信。
 
 🔔：simple_web分支是简单的单用户的Web界面。如果单用户的页面测试使用，可以使用simple_web分支。
-nanobot010分支是nanobot的0.1.0版本
+🔔：nanobot010分支是nanobot的0.1.0版本
 
 ---
 
@@ -15,6 +15,7 @@ nanobot010分支是nanobot的0.1.0版本
   - nanobot/web 新增Web目录
   - nanobot/agent/tools下的web.py新增get_wechat_article使用文件weixin_search.py
   - nanobot/cli/commands.py 新增if config.is_proxy_mode检测
+  - nanobot/channels/manager.py 启动web端管理
 
 ## 目录
 

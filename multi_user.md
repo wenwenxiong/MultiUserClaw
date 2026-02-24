@@ -430,6 +430,8 @@ docker compose logs -f
 docker compose down
 
 
-# 删除用户创建的容器
+### 删除用户创建的容器
 docker ps -a --filter "name=nanobot-user-" --format "{{.Names}}" 2>&1
 docker rm -f nanobot-user-9abeea27 2>&1
+### 清理 DB 中的旧记录
+docker exec nanobot-postgres-1 psql -U nanobot -d nanobot_platform -c "DELETE FROM containers;"
