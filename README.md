@@ -14,6 +14,7 @@ nanobot010分支是nanobot的0.1.0版本
   - 改造 nanobot/config/schema.py：增加is_proxy_mode的配置
   - nanobot/web 新增Web目录
   - nanobot/agent/tools下的web.py新增get_wechat_article使用文件weixin_search.py
+  - nanobot/cli/commands.py 新增if config.is_proxy_mode检测
 
 ## 目录
 
