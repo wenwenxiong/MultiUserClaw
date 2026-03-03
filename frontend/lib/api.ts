@@ -4,7 +4,7 @@
 // Auth requests go to /api/auth/*, nanobot requests are proxied via
 // /api/nanobot/* to the user's container.
 
-import type { ChatMessage, Session, SessionDetail, SystemStatus, CronJob, Skill, SlashCommand, PluginInfo, TokenResponse, AuthUser, FileAttachment } from '@/types';
+import type { ChatMessage, Session, SessionDetail, SystemStatus, CronJob, Skill, SlashCommand, PluginInfo, TokenResponse, AuthUser, FileAttachment, Marketplace, MarketplacePlugin } from '@/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -565,6 +565,50 @@ export async function uploadSkill(file: File): Promise<Skill> {
     throw new Error(`API error ${res.status}: ${text}`);
   }
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace (proxied)
+// ---------------------------------------------------------------------------
+
+export async function listMarketplaces(): Promise<Marketplace[]> {
+  return fetchJSON('/api/nanobot/marketplaces');
+}
+
+export async function addMarketplace(source: string): Promise<Marketplace> {
+  return fetchJSON('/api/nanobot/marketplaces', {
+    method: 'POST',
+    body: JSON.stringify({ source }),
+  });
+}
+
+export async function removeMarketplace(name: string): Promise<void> {
+  await fetchJSON(`/api/nanobot/marketplaces/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function updateMarketplace(name: string): Promise<Marketplace> {
+  return fetchJSON(`/api/nanobot/marketplaces/${encodeURIComponent(name)}/update`, {
+    method: 'POST',
+  });
+}
+
+export async function listMarketplacePlugins(name: string): Promise<MarketplacePlugin[]> {
+  return fetchJSON(`/api/nanobot/marketplaces/${encodeURIComponent(name)}/plugins`);
+}
+
+export async function installMarketplacePlugin(marketplaceName: string, pluginName: string): Promise<void> {
+  await fetchJSON(
+    `/api/nanobot/marketplaces/${encodeURIComponent(marketplaceName)}/plugins/${encodeURIComponent(pluginName)}/install`,
+    { method: 'POST' }
+  );
+}
+
+export async function uninstallPlugin(pluginName: string): Promise<void> {
+  await fetchJSON(`/api/nanobot/plugins/${encodeURIComponent(pluginName)}`, {
+    method: 'DELETE',
+  });
 }
 
 // ---------------------------------------------------------------------------

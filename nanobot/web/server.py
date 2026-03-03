@@ -58,6 +58,10 @@ class ToggleCronJobRequest(BaseModel):
     enabled: bool
 
 
+class AddMarketplaceRequest(BaseModel):
+    source: str
+
+
 # ============================================================================
 # App factory
 # ============================================================================
@@ -565,10 +569,11 @@ def _register_routes(app: FastAPI) -> None:
                     arcname = f"{name}/{file_path.relative_to(skill_dir)}"
                     zf.write(file_path, arcname)
         from fastapi.responses import Response
+        from nanobot.web.files import content_disposition
         return Response(
             content=buf.getvalue(),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+            headers={"Content-Disposition": content_disposition("attachment", f"{name}.zip")},
         )
 
     @app.post("/api/skills/upload")
@@ -701,10 +706,11 @@ def _register_routes(app: FastAPI) -> None:
         filename = meta["name"]
 
         from fastapi.responses import Response
+        from nanobot.web.files import content_disposition
         return Response(
             content=file_path.read_bytes(),
             media_type=ct,
-            headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+            headers={"Content-Disposition": content_disposition(disposition, filename)},
         )
 
     @app.delete("/api/files/{file_id}")
@@ -742,6 +748,7 @@ def _register_routes(app: FastAPI) -> None:
 
         import mimetypes
         from fastapi.responses import Response
+        from nanobot.web.files import content_disposition
 
         ct, _ = mimetypes.guess_type(file_path.name)
         ct = ct or "application/octet-stream"
@@ -749,7 +756,7 @@ def _register_routes(app: FastAPI) -> None:
         return Response(
             content=file_path.read_bytes(),
             media_type=ct,
-            headers={"Content-Disposition": f'{disposition}; filename="{file_path.name}"'},
+            headers={"Content-Disposition": content_disposition(disposition, file_path.name)},
         )
 
     @app.post("/api/workspace/upload")
@@ -856,6 +863,92 @@ def _register_routes(app: FastAPI) -> None:
                     "plugin_name": cmd.plugin_name,
                 })
         return commands
+
+    # ------ Marketplace ------
+
+    @app.get("/api/marketplaces")
+    async def list_marketplaces():
+        """List all registered marketplaces."""
+        from nanobot.agent.marketplace import MarketplaceManager
+        mgr = MarketplaceManager()
+        return [
+            {"name": m.name, "source": m.source, "type": m.type}
+            for m in mgr.list_marketplaces()
+        ]
+
+    @app.post("/api/marketplaces")
+    async def add_marketplace(req: AddMarketplaceRequest):
+        """Register a new marketplace from local path or Git URL."""
+        from nanobot.agent.marketplace import MarketplaceManager
+        mgr = MarketplaceManager()
+        try:
+            entry = mgr.add_marketplace(req.source)
+            return {"name": entry.name, "source": entry.source, "type": entry.type}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.delete("/api/marketplaces/{name}")
+    async def remove_marketplace(name: str):
+        """Remove a registered marketplace."""
+        from nanobot.agent.marketplace import MarketplaceManager
+        mgr = MarketplaceManager()
+        try:
+            mgr.remove_marketplace(name)
+            return {"ok": True}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.post("/api/marketplaces/{name}/update")
+    async def update_marketplace(name: str):
+        """Update (clone or pull) a marketplace's cached data."""
+        from nanobot.agent.marketplace import MarketplaceManager
+        mgr = MarketplaceManager()
+        try:
+            entry = mgr.update_marketplace(name)
+            return {"name": entry.name, "source": entry.source, "type": entry.type}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.get("/api/marketplaces/{name}/plugins")
+    async def list_marketplace_plugins(name: str):
+        """List available plugins in a marketplace."""
+        from nanobot.agent.marketplace import MarketplaceManager
+        mgr = MarketplaceManager()
+        try:
+            plugins = mgr.list_available_plugins(name)
+            return [
+                {
+                    "name": p.name,
+                    "description": p.description,
+                    "marketplace_name": p.marketplace_name,
+                    "installed": p.installed,
+                }
+                for p in plugins
+            ]
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.post("/api/marketplaces/{name}/plugins/{plugin_name}/install")
+    async def install_marketplace_plugin(name: str, plugin_name: str):
+        """Install a plugin from a marketplace."""
+        from nanobot.agent.marketplace import MarketplaceManager
+        mgr = MarketplaceManager()
+        try:
+            dest = mgr.install_plugin(name, plugin_name)
+            return {"ok": True, "path": str(dest)}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.delete("/api/plugins/{plugin_name}")
+    async def uninstall_plugin(plugin_name: str):
+        """Uninstall a plugin."""
+        from nanobot.agent.marketplace import MarketplaceManager
+        mgr = MarketplaceManager()
+        try:
+            mgr.uninstall_plugin(plugin_name)
+            return {"ok": True}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     # ------ Health ------
 

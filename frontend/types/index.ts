@@ -129,3 +129,16 @@ export interface CronJob {
   last_error: string | null;
   created_at_ms: number;
 }
+
+export interface Marketplace {
+  name: string;
+  source: string;
+  type: 'local' | 'git';
+}
+
+export interface MarketplacePlugin {
+  name: string;
+  description: string;
+  marketplace_name: string;
+  installed: boolean;
+}

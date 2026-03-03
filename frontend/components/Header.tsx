@@ -3,7 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { MessageSquare, Activity, Clock, Puzzle, Blocks, LogOut, HelpCircle, FolderOpen } from 'lucide-react';
+import { MessageSquare, Activity, Clock, Puzzle, Blocks, LogOut, HelpCircle, FolderOpen, Store } from 'lucide-react';
 import { useChatStore } from '@/lib/store';
 import { logout } from '@/lib/api';
 
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { name: '定时任务', href: '/cron', icon: Clock },
   { name: 'skills', href: '/skills', icon: Puzzle },
   { name: 'plugins', href: '/plugins', icon: Blocks },
+  { name: 'marketplace', href: '/marketplace', icon: Store },
   { name: '文件', href: '/files', icon: FolderOpen },
   { name: '帮助', href: '/help', icon: HelpCircle },
 ];

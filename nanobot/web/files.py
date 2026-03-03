@@ -8,6 +8,17 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+
+def content_disposition(disposition: str, filename: str) -> str:
+    """Build Content-Disposition header value, RFC 5987 encoding for non-ASCII."""
+    try:
+        filename.encode("ascii")
+        return f'{disposition}; filename="{filename}"'
+    except UnicodeEncodeError:
+        utf8_quoted = quote(filename)
+        return f"{disposition}; filename*=UTF-8''{utf8_quoted}"
 
 from loguru import logger
 

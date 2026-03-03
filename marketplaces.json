@@ -1,0 +1,7 @@
+[
+  {
+    "name": "demo_marketplace",
+    "source": "https://github.com/mrlm-xyz/demo-claude-marketplace.git",
+    "type": "git"
+  }
+]
