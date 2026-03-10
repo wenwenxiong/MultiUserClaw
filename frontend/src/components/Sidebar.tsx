@@ -8,9 +8,9 @@ import {
   Zap,
   Radio,
   Brain,
-  BookOpen,
+  FolderOpen,
   MessageSquare,
-  FileText,
+  Clock,
   Settings,
   User,
 } from 'lucide-react'
@@ -34,14 +34,14 @@ const navSections = [
       { to: '/skills', icon: Zap, label: '技能商店' },
       { to: '/channels', icon: Radio, label: '渠道管理' },
       { to: '/models', icon: Brain, label: 'AI 模型' },
-      { to: '/knowledge', icon: BookOpen, label: '知识库' },
+      { to: '/files', icon: FolderOpen, label: '文件管理' },
     ],
   },
   {
     label: '系统',
     items: [
       { to: '/sessions', icon: MessageSquare, label: '会话历史' },
-      { to: '/audit', icon: FileText, label: '审计日志' },
+      { to: '/cron', icon: Clock, label: '定时任务' },
       { to: '/settings', icon: Settings, label: '系统设置' },
     ],
   },
@@ -79,7 +79,7 @@ export default function Sidebar() {
               const Icon = item.icon
               const isActive = location.pathname === item.to ||
                 (item.to !== '/dashboard' && location.pathname.startsWith(item.to))
-              const isDisabled = item.to === '/knowledge' || item.to === '/settings'
+              const isDisabled = item.to === '/settings'
 
               if (isDisabled) {
                 return (

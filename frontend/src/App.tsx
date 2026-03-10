@@ -9,7 +9,8 @@ import SkillStore from './pages/SkillStore'
 import Channels from './pages/Channels'
 import AIModels from './pages/AIModels'
 import Sessions from './pages/Sessions'
-import AuditLog from './pages/AuditLog'
+import CronJobs from './pages/CronJobs'
+import FileManager from './pages/FileManager'
 import { isLoggedIn } from './lib/api'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -30,8 +31,9 @@ export default function App() {
         <Route path="skills" element={<SkillStore />} />
         <Route path="channels" element={<Channels />} />
         <Route path="models" element={<AIModels />} />
+        <Route path="files" element={<FileManager />} />
         <Route path="sessions" element={<Sessions />} />
-        <Route path="audit" element={<AuditLog />} />
+        <Route path="cron" element={<CronJobs />} />
       </Route>
     </Routes>
   )

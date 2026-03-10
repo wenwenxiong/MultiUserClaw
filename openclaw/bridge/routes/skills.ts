@@ -47,8 +47,14 @@ function scanSkillsDir(dir: string, source: string): SkillInfo[] {
   if (!fs.existsSync(dir)) return skills;
 
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const skillMdPath = path.join(dir, entry.name, "SKILL.md");
+    // Follow symlinks: isDirectory() returns false for symlinks
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const entryPath = path.join(dir, entry.name);
+    try {
+      const stat = fs.statSync(entryPath);
+      if (!stat.isDirectory()) continue;
+    } catch { continue; }
+    const skillMdPath = path.join(entryPath, "SKILL.md");
     if (!fs.existsSync(skillMdPath)) continue;
 
     const content = fs.readFileSync(skillMdPath, "utf-8");
@@ -71,16 +77,19 @@ export function skillsRoutes(config: BridgeConfig): Router {
   const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
   const builtinSkillsDir = path.resolve(process.cwd(), "skills");
+  const globalSkillsDir = path.join(config.openclawHome, "skills");
   const workspaceSkillsDir = path.join(config.workspacePath, "skills");
 
   // GET /api/skills
   router.get("/skills", asyncHandler(async (_req, res) => {
     const builtin = scanSkillsDir(builtinSkillsDir, "builtin");
+    const global = scanSkillsDir(globalSkillsDir, "global");
     const workspace = scanSkillsDir(workspaceSkillsDir, "workspace");
 
-    // Workspace skills override builtin ones with same name
+    // Priority: workspace > global > builtin (higher overrides lower)
     const skillMap = new Map<string, SkillInfo>();
     for (const s of builtin) skillMap.set(s.name, s);
+    for (const s of global) skillMap.set(s.name, s);
     for (const s of workspace) skillMap.set(s.name, s);
 
     res.json(Array.from(skillMap.values()));
