@@ -593,5 +593,5 @@ Next.js 应用，暗色主题，位于 `frontend/` 目录。
 
 ## 📬 联系方式
 
-如有问题，请联系作者：
+如有问题，请联系作者：johnsongzc
 ![weichat.png](doc/weichat.png)
