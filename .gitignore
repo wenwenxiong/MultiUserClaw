@@ -60,3 +60,4 @@ cache
 .claude
 .claude/settings.local.json
 docs
+openclaw/bridge-deploy-copy

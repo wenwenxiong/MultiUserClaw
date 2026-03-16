@@ -372,9 +372,8 @@ export async function getStatus(): Promise<Record<string, unknown>> {
 }
 
 export async function ping(): Promise<{ message: string }> {
-  const res = await fetch(`${API_URL}/api/ping`)
-  if (!res.ok) throw new Error(`Ping failed: ${res.status}`)
-  return res.json()
+  // Check the user's OpenClaw container status, not just the gateway
+  return fetchJSON<{ message: string }>('/api/openclaw/ping')
 }
 
 // ---------------------------------------------------------------------------
