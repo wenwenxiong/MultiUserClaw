@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { listSkills, searchSkills, installSkill, toggleSkill, scanGitSkills, installGitSkills } from '../lib/api'
+import { listSkills, searchSkills, installSkill, toggleSkill, scanGitSkills, installGitSkills, uploadSkillZip, downloadSkillUrl, getAccessToken } from '../lib/api'
 import type { Skill, SkillSearchResult, GitScanResult } from '../lib/api'
-import { Zap, Loader2, Search, Download, ExternalLink, Check, GitBranch } from 'lucide-react'
+import { Zap, Loader2, Search, Download, ExternalLink, Check, GitBranch, Upload } from 'lucide-react'
 
 export default function SkillStore() {
   const [skills, setSkills] = useState<Skill[]>([])
@@ -20,6 +20,10 @@ export default function SkillStore() {
 
   // Toggle state
   const [toggling, setToggling] = useState<string | null>(null)
+
+  // Upload state
+  const [uploading, setUploading] = useState(false)
+  const [uploadMsg, setUploadMsg] = useState('')
 
   // Git repo state
   const [gitUrl, setGitUrl] = useState('')
@@ -92,6 +96,44 @@ export default function SkillStore() {
     }
   }
 
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = '' // reset input
+    setUploading(true)
+    setUploadMsg('')
+    setInstallError('')
+    try {
+      const result = await uploadSkillZip(file)
+      setUploadMsg(`技能「${result.name}」上传成功`)
+      refreshSkills()
+      setTimeout(() => setUploadMsg(''), 3000)
+    } catch (err: any) {
+      setInstallError(err?.message || '上传失败')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleDownload = async (name: string) => {
+    const url = downloadSkillUrl(name)
+    const token = getAccessToken()
+    try {
+      const res = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) throw new Error('Download failed')
+      const blob = await res.blob()
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `${name}.zip`
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch {
+      setInstallError(`下载技能「${name}」失败`)
+    }
+  }
+
   const handleGitScan = async (e?: React.FormEvent) => {
     e?.preventDefault()
     if (!gitUrl.trim() || gitScanning) return
@@ -143,12 +185,26 @@ export default function SkillStore() {
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-dark-text">技能商店</h1>
-        <p className="mt-1 text-sm text-dark-text-secondary">
-          搜索并安装来自 <a href="https://skills.sh/" target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">skills.sh</a> 的 AI 技能扩展
-        </p>
+      <div className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-dark-text">技能商店</h1>
+          <p className="mt-1 text-sm text-dark-text-secondary">
+            搜索并安装来自 <a href="https://skills.sh/" target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">skills.sh</a> 的 AI 技能扩展
+          </p>
+        </div>
+        <label className={`flex items-center gap-2 rounded-lg border border-dark-border px-4 py-2 text-sm text-dark-text-secondary hover:text-dark-text hover:border-accent-blue transition-colors cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+          {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+          {uploading ? '上传中...' : '上传技能 (.zip)'}
+          <input type="file" accept=".zip" onChange={handleUpload} className="hidden" disabled={uploading} />
+        </label>
       </div>
+
+      {uploadMsg && (
+        <div className="mb-4 rounded-lg bg-accent-green/10 p-3 text-sm text-accent-green flex items-center gap-2">
+          <Check size={16} />
+          {uploadMsg}
+        </div>
+      )}
 
       {/* Search bar */}
       <form onSubmit={handleSearch} className="mb-6 flex gap-3">
@@ -411,14 +467,24 @@ export default function SkillStore() {
                   <h3 className="mt-3 text-sm font-semibold text-dark-text">{skill.name}</h3>
                   <p className="mt-1 text-xs text-dark-text-secondary leading-relaxed line-clamp-2">{skill.description}</p>
                   <div className="mt-3 flex items-center justify-between">
-                    {skill.source && (
-                      <span className="text-xs text-dark-text-secondary">
-                        来源: {skill.source}
-                      </span>
-                    )}
-                    {isDisabled && (
-                      <span className="text-xs text-accent-yellow">已禁用</span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {skill.source && (
+                        <span className="text-xs text-dark-text-secondary">
+                          来源: {skill.source}
+                        </span>
+                      )}
+                      {isDisabled && (
+                        <span className="text-xs text-accent-yellow">已禁用</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDownload(skill.name) }}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-xs text-dark-text-secondary hover:text-accent-blue hover:bg-accent-blue/10 transition-colors"
+                      title={`下载 ${skill.name}.zip`}
+                    >
+                      <Download size={12} />
+                      下载
+                    </button>
                   </div>
                 </div>
               )

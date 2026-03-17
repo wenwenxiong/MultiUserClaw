@@ -367,6 +367,30 @@ export async function toggleSkill(name: string, enabled: boolean): Promise<void>
   })
 }
 
+export async function uploadSkillZip(file: File): Promise<Skill> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const token = getAccessToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const res = await fetch(`${API_URL}/api/openclaw/skills/upload`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Upload failed')
+  }
+  return res.json()
+}
+
+export function downloadSkillUrl(name: string): string {
+  return `${API_URL}/api/openclaw/skills/${encodeURIComponent(name)}/download`
+}
+
 export async function getStatus(): Promise<Record<string, unknown>> {
   return fetchJSON<Record<string, unknown>>('/api/openclaw/status')
 }
