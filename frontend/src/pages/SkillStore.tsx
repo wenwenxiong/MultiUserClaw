@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { listSkills, searchSkills, installSkill, toggleSkill, scanGitSkills, installGitSkills, uploadSkillZip, downloadSkillUrl, getAccessToken } from '../lib/api'
+import { listSkills, searchSkills, installSkill, toggleSkill, deleteSkill, scanGitSkills, installGitSkills, uploadSkillZip, downloadSkillUrl, getAccessToken } from '../lib/api'
 import type { Skill, SkillSearchResult, GitScanResult } from '../lib/api'
-import { Zap, Loader2, Search, Download, ExternalLink, Check, GitBranch, Upload } from 'lucide-react'
+import { Zap, Loader2, Search, Download, ExternalLink, Check, GitBranch, Upload, Trash2 } from 'lucide-react'
 
 export default function SkillStore() {
   const [skills, setSkills] = useState<Skill[]>([])
@@ -20,6 +20,9 @@ export default function SkillStore() {
 
   // Toggle state
   const [toggling, setToggling] = useState<string | null>(null)
+
+  // Delete state
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   // Upload state
   const [uploading, setUploading] = useState(false)
@@ -93,6 +96,21 @@ export default function SkillStore() {
       refreshSkills()
     } finally {
       setToggling(null)
+    }
+  }
+
+  const handleDelete = async (skill: Skill) => {
+    if (deleting) return
+    if (!window.confirm(`确定要删除技能「${skill.name}」吗？`)) return
+    setDeleting(skill.name)
+    setInstallError('')
+    try {
+      await deleteSkill(skill.name)
+      setSkills(prev => prev.filter(s => s.name !== skill.name))
+    } catch (err: any) {
+      setInstallError(err?.message || `删除技能「${skill.name}」失败`)
+    } finally {
+      setDeleting(null)
     }
   }
 
@@ -477,14 +495,27 @@ export default function SkillStore() {
                         <span className="text-xs text-accent-yellow">已禁用</span>
                       )}
                     </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDownload(skill.name) }}
-                      className="flex items-center gap-1 rounded px-2 py-1 text-xs text-dark-text-secondary hover:text-accent-blue hover:bg-accent-blue/10 transition-colors"
-                      title={`下载 ${skill.name}.zip`}
-                    >
-                      <Download size={12} />
-                      下载
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDownload(skill.name) }}
+                        className="flex items-center gap-1 rounded px-2 py-1 text-xs text-dark-text-secondary hover:text-accent-blue hover:bg-accent-blue/10 transition-colors"
+                        title={`下载 ${skill.name}.zip`}
+                      >
+                        <Download size={12} />
+                        下载
+                      </button>
+                      {skill.source !== 'builtin' && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDelete(skill) }}
+                          disabled={deleting === skill.name}
+                          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-dark-text-secondary hover:text-accent-red hover:bg-accent-red/10 transition-colors disabled:opacity-50"
+                          title={`删除 ${skill.name}`}
+                        >
+                          {deleting === skill.name ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                          删除
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )

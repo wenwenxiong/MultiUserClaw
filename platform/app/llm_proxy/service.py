@@ -3,12 +3,17 @@
 Receives OpenAI-compatible requests from user containers (authenticated
 by container token), injects the real API key, records usage, enforces
 quotas, and forwards to the actual LLM provider.
+
+Design: pass-through proxy. We only extract `model` for routing and `stream`
+for response handling. All other parameters (messages, tools, temperature,
+max_tokens, max_completion_tokens, reasoning_effort, thinking, top_p,
+response_format, etc.) are forwarded as-is to litellm/provider.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
 from litellm import acompletion
@@ -25,15 +30,8 @@ logger = logging.getLogger("platform.llm_proxy")
 # ---------------------------------------------------------------------------
 # Model → provider mapping
 # ---------------------------------------------------------------------------
-# 每个 provider 定义:
-#   prefix:      用户在 DEFAULT_MODEL 或前端选模型时使用的前缀，如 "openai/gpt-4o"
-#   key_attr:    settings 中 API Key 的属性名
-#   litellm_fmt: litellm 调用时的模型名格式，{model} 会被替换为去掉前缀后的模型名
-#   api_base:    自定义 API 端点（None 表示使用 litellm 默认）
-#   keywords:    模型名中包含这些关键词时自动匹配（不需要显式前缀）
 
 _PROVIDERS: list[dict] = [
-    # --- 标准云端 provider ---
     {
         "prefix": "claude",
         "key_attr": "anthropic_api_key",
@@ -55,7 +53,6 @@ _PROVIDERS: list[dict] = [
         "api_base": None,
         "keywords": ["deepseek"],
     },
-    # --- 需要自定义 api_base 的 OpenAI 兼容 provider ---
     {
         "prefix": "dashscope",
         "key_attr": "dashscope_api_key",
@@ -91,55 +88,39 @@ _PROVIDERS: list[dict] = [
         "api_base": "https://aihubmix.com/v1",
         "keywords": ["aihubmix"],
     },
-    # --- 自托管 vLLM ---
     {
         "prefix": "vllm",
         "key_attr": "hosted_vllm_api_key",
         "litellm_fmt": "hosted_vllm/{model}",
-        "api_base_attr": "hosted_vllm_api_base",  # 从 settings 动态读取
-        "keywords": [],  # 无关键词匹配，仅通过显式前缀或兜底
+        "api_base_attr": "hosted_vllm_api_base",
+        "keywords": [],
     },
 ]
 
-# 构建前缀查找表: "claude" → provider dict
 _PREFIX_MAP: dict[str, dict] = {p["prefix"]: p for p in _PROVIDERS}
 
-# 构建关键词查找表: "gpt" → provider dict
 _KEYWORD_MAP: dict[str, dict] = {}
 for _p in _PROVIDERS:
     for _kw in _p.get("keywords", []):
         _KEYWORD_MAP[_kw] = _p
 
-# Models that only accept temperature=1 (or don't support temperature at all)
-_FIXED_TEMPERATURE_MODELS = {"kimi-k2.5", "kimi-k2-thinking", "kimi-k2-thinking-turbo"}
-
 
 def _get_provider_key_and_base(provider: dict) -> tuple[str, str | None]:
-    """从 provider 定义中获取 api_key 和 api_base。"""
     api_key = getattr(settings, provider["key_attr"], "") or ""
-    # api_base 可以是固定值，也可以从 settings 动态读取
     if "api_base_attr" in provider:
         api_base = getattr(settings, provider["api_base_attr"], "") or None
     else:
         api_base = provider.get("api_base")
-    # vLLM 等无固定 key 的 provider，给个 dummy
     if not api_key and provider["prefix"] == "vllm":
         api_key = "dummy"
     return api_key, api_base
 
 
 def _resolve_provider(model: str) -> tuple[str, str, str | None]:
-    """Return (litellm_model_name, api_key, api_base_or_None) for the given model.
-
-    路由优先级:
-      1. 显式前缀 — "openai/gpt-4o", "vllm/Qwen2.5-7B", "dashscope/qwen-turbo" 等
-      2. 关键词匹配 — 模型名含 "claude"、"gpt"、"qwen" 等自动路由
-      3. 兜底: vLLM → OpenRouter → 报错
-    """
+    """Return (litellm_model_name, api_key, api_base_or_None)."""
     model_lower = model.lower()
-    logger.debug("正在解析模型供应商: model=%r", model)
 
-    # ---- 1. 显式前缀匹配 ----
+    # 1. Explicit prefix
     if "/" in model:
         prefix = model_lower.split("/", 1)[0]
         if prefix in _PREFIX_MAP:
@@ -148,40 +129,27 @@ def _resolve_provider(model: str) -> tuple[str, str, str | None]:
             api_key, api_base = _get_provider_key_and_base(provider)
             if api_key:
                 litellm_model = provider["litellm_fmt"].format(model=actual_model)
-                logger.info("模型路由: %s → %s (显式前缀, litellm=%s)", model, prefix, litellm_model)
+                logger.info("模型路由: %s → %s (litellm=%s)", model, prefix, litellm_model)
                 return litellm_model, api_key, api_base
-            else:
-                logger.warning("模型 %s 使用显式前缀 %r，但 %s 为空！", model, prefix, provider["key_attr"])
 
-    # ---- 2. 关键词自动匹配 ----
+    # 2. Keyword match
     for keyword, provider in _KEYWORD_MAP.items():
         if keyword in model_lower:
             api_key, api_base = _get_provider_key_and_base(provider)
             if api_key:
                 actual_model = model.split("/", 1)[1] if "/" in model else model
                 litellm_model = provider["litellm_fmt"].format(model=actual_model)
-                logger.info("模型路由: %s → %s (关键词=%r, litellm=%s)", model, provider["prefix"], keyword, litellm_model)
+                logger.info("模型路由: %s → %s (keyword=%r, litellm=%s)", model, provider["prefix"], keyword, litellm_model)
                 return litellm_model, api_key, api_base
-            else:
-                logger.warning("模型 %s 匹配到关键词 %r，但 %s 为空！", model, keyword, provider["key_attr"])
 
-    # ---- 3. 兜底: vLLM ----
+    # 3. Fallback: vLLM
     if settings.hosted_vllm_api_base:
-        vllm_key = settings.hosted_vllm_api_key or "dummy"
-        logger.info("模型路由: %s → vLLM (兜底, base=%s)", model, settings.hosted_vllm_api_base)
-        return f"hosted_vllm/{model}", vllm_key, settings.hosted_vllm_api_base
+        return f"hosted_vllm/{model}", settings.hosted_vllm_api_key or "dummy", settings.hosted_vllm_api_base
 
-    # ---- 4. 兜底: OpenRouter ----
+    # 4. Fallback: OpenRouter
     if settings.openrouter_api_key:
-        logger.info("模型路由: %s → OpenRouter (兜底)", model)
         return f"openrouter/{model}", settings.openrouter_api_key, None
 
-    logger.error(
-        "找不到模型 %r 的供应商！已注册前缀: %s, 关键词: %s",
-        model,
-        list(_PREFIX_MAP.keys()),
-        list(_KEYWORD_MAP.keys()),
-    )
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail=f"No provider configured for model '{model}'",
@@ -200,7 +168,6 @@ _TIER_LIMITS = {
 
 
 async def _check_quota(db: AsyncSession, user: User) -> None:
-    """Raise 429 if the user exceeded their daily quota."""
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     result = await db.execute(
         select(func.coalesce(func.sum(UsageRecord.total_tokens), 0)).where(
@@ -212,11 +179,44 @@ async def _check_quota(db: AsyncSession, user: User) -> None:
     limit = _TIER_LIMITS.get(user.quota_tier, _TIER_LIMITS["free"])
 
     if used_today >= limit:
-        logger.warning("用户 %s 超出每日配额: %d/%d", user.id, used_today, limit)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Daily token quota exceeded ({used_today:,}/{limit:,}). Resets at midnight UTC.",
         )
+
+
+# ---------------------------------------------------------------------------
+# Keys that litellm accepts directly from OpenAI-compatible requests.
+# We pass these through as-is. Keys NOT in this set are stripped to avoid
+# litellm errors on unknown parameters.
+# ---------------------------------------------------------------------------
+
+_LITELLM_PASSTHROUGH_KEYS = {
+    "messages",
+    "temperature",
+    "top_p",
+    "n",
+    "stop",
+    "max_tokens",
+    "max_completion_tokens",
+    "presence_penalty",
+    "frequency_penalty",
+    "logit_bias",
+    "response_format",
+    "seed",
+    "tools",
+    "tool_choice",
+    "parallel_tool_calls",
+    "user",
+    "reasoning_effort",
+    "thinking",
+    "service_tier",
+    "store",
+    "metadata",
+    "logprobs",
+    "top_logprobs",
+    "stream_options",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -226,27 +226,29 @@ async def _check_quota(db: AsyncSession, user: User) -> None:
 async def proxy_chat_completion(
     db: AsyncSession,
     container_token: str,
-    model: str,
-    messages: list[dict],
-    max_tokens: int = 4096,
-    temperature: float = 0.7,
-    tools: list[dict] | None = None,
-    stream: bool = False,
+    raw_request: dict,
 ):
-    """Validate token, check quota, forward to real LLM, record usage."""
-    logger.info("收到 LLM 请求: model=%s, stream=%s, 消息数=%d, 工具数=%s",
-                model, stream, len(messages), len(tools) if tools else 0)
+    """Pass-through proxy: authenticate, check quota, forward to LLM, record usage.
 
-    # 1. Authenticate — supports container token or JWT API token
-    # In local dev mode (dev_openclaw_url set), skip validation and quota check.
+    All OpenAI-compatible parameters are forwarded as-is. We only modify:
+    - model: routed to the correct litellm model name
+    - api_key: injected from platform settings
+    - api_base: injected for providers that need it
+    - stream_options: injected for streaming usage tracking
+    """
+    model = raw_request.get("model", "")
+    stream = raw_request.get("stream", False)
+    messages = raw_request.get("messages", [])
+
+    logger.info("收到 LLM 请求: model=%s, stream=%s, 消息数=%d", model, stream, len(messages))
+
+    # 1. Authenticate
+    container = None
+    user = None
+
     if settings.dev_openclaw_url:
-        logger.debug("开发模式: 跳过认证和配额检查")
-        container = None
-        user = None
+        pass  # Skip auth in dev mode
     else:
-        container = None
-        user = None
-
         # Try JWT API token first
         jwt_payload = decode_token(container_token)
         if jwt_payload and jwt_payload.get("type") == "access":
@@ -254,8 +256,6 @@ async def proxy_chat_completion(
             if user_id:
                 user_result = await db.execute(select(User).where(User.id == user_id))
                 user = user_result.scalar_one_or_none()
-                if user:
-                    logger.debug("JWT 认证成功: user=%s", user_id[:8])
 
         # Fallback: container token
         if user is None:
@@ -264,54 +264,56 @@ async def proxy_chat_completion(
             )
             container = result.scalar_one_or_none()
             if container is None:
-                logger.warning("认证失败: 无效的 token")
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-            logger.debug("容器 token 认证成功: container=%s", container.id[:8] if container.id else "?")
             user_result = await db.execute(select(User).where(User.id == container.user_id))
             user = user_result.scalar_one_or_none()
 
         if user is None or not user.is_active:
-            logger.warning("用户账户不可用")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account disabled")
 
         await _check_quota(db, user)
 
-    # 3. Resolve provider
+    # 2. Resolve provider
     litellm_model, api_key, api_base = _resolve_provider(model)
 
-    # 4. Call LLM
+    # 3. Build kwargs — pass through all known OpenAI-compatible params
     kwargs: dict = {
         "model": litellm_model,
-        "messages": messages,
-        "max_tokens": max_tokens,
         "api_key": api_key,
         "stream": stream,
     }
-    if stream:
-        kwargs["stream_options"] = {"include_usage": True}
-    # Some models (e.g. kimi-k2.5) only accept temperature=1; skip the param for them.
-    model_base = model.split("/")[-1].lower()
-    if model_base not in _FIXED_TEMPERATURE_MODELS:
-        kwargs["temperature"] = temperature
     if api_base:
         kwargs["api_base"] = api_base
-    if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"
 
+    # Pass through all supported parameters from the original request
+    for key in _LITELLM_PASSTHROUGH_KEYS:
+        if key in raw_request:
+            kwargs[key] = raw_request[key]
+
+    # Ensure streaming usage is reported
+    if stream:
+        if "stream_options" not in kwargs:
+            kwargs["stream_options"] = {"include_usage": True}
+        elif isinstance(kwargs["stream_options"], dict):
+            kwargs["stream_options"].setdefault("include_usage", True)
+
+    # Log extra keys we're NOT forwarding (for debugging)
+    ignored_keys = set(raw_request.keys()) - _LITELLM_PASSTHROUGH_KEYS - {"model", "stream"}
+    if ignored_keys:
+        logger.debug("未转发的请求字段: %s", ignored_keys)
+
+    # 4. Call LLM
     try:
         response = await acompletion(**kwargs)
     except Exception as e:
-        safe_kwargs = {k: (v if k != "messages" else f"[{len(v)} 条消息]")
-                       for k, v in kwargs.items() if k != "api_key"}
-        logger.error("LLM 调用失败: model=%s, 错误=%s", model, e)
-        logger.error("LLM 调用参数 (不含密钥): %s", safe_kwargs)
+        msg_count = len(messages)
+        logger.error("LLM 调用失败: model=%s, litellm=%s, 错误=%s, 消息数=%d", model, litellm_model, e, msg_count)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"LLM provider error: {e}",
         )
 
-    # 4b. Streaming: return an async generator that yields SSE chunks
+    # 5. Streaming response
     if stream:
         import json
 
@@ -321,7 +323,6 @@ async def proxy_chat_completion(
             try:
                 async for chunk in response:
                     data = chunk.model_dump()
-                    # Extract usage from the final chunk if present
                     chunk_usage = data.get("usage")
                     if chunk_usage:
                         total_input = chunk_usage.get("prompt_tokens") or 0
@@ -331,46 +332,34 @@ async def proxy_chat_completion(
             except Exception:
                 yield "data: [DONE]\n\n"
             finally:
-                # Record streaming usage
                 total = total_input + total_output
                 if user is not None and total > 0:
                     try:
-                        record = UsageRecord(
-                            user_id=user.id,
-                            model=model,
-                            input_tokens=total_input,
-                            output_tokens=total_output,
+                        db.add(UsageRecord(
+                            user_id=user.id, model=model,
+                            input_tokens=total_input, output_tokens=total_output,
                             total_tokens=total,
-                        )
-                        db.add(record)
+                        ))
                         await db.commit()
-                        logger.info("Streaming usage recorded: model=%s, total=%d", model, total)
                     except Exception as e:
                         logger.warning("Failed to record streaming usage: %s", e)
 
         return _stream_generator()
 
-    # 5. Record usage (skip in dev mode)
+    # 6. Record usage (non-streaming)
     usage = getattr(response, "usage", None)
-    if usage:
-        logger.info("LLM 响应完成: model=%s, 总token=%d (输入=%d, 输出=%d)",
-                     model, usage.total_tokens or 0, usage.prompt_tokens or 0, usage.completion_tokens or 0)
-    if user is not None:
-        if usage:
-            record = UsageRecord(
-                user_id=user.id,
-                model=model,
-                input_tokens=usage.prompt_tokens or 0,
-                output_tokens=usage.completion_tokens or 0,
-                total_tokens=usage.total_tokens or 0,
-            )
-            db.add(record)
-            await db.commit()
+    if user is not None and usage:
+        db.add(UsageRecord(
+            user_id=user.id, model=model,
+            input_tokens=usage.prompt_tokens or 0,
+            output_tokens=usage.completion_tokens or 0,
+            total_tokens=usage.total_tokens or 0,
+        ))
+        await db.commit()
 
-    # 6. Update container last_active_at (skip in dev mode)
+    # 7. Update container last_active_at
     if container is not None:
         container.last_active_at = datetime.utcnow()
         await db.commit()
 
-    # 7. Return OpenAI-compatible response
     return response.model_dump()

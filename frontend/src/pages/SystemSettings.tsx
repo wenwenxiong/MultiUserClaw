@@ -249,48 +249,67 @@ export default function SystemSettings() {
           </div>
           <div className="px-5 py-4">
             {containerInfo?.container_name ? (
-              <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2.5 text-sm">
-                <span className="text-dark-text-secondary">容器名称</span>
-                <span className="flex items-center gap-2">
-                  <span className="text-dark-text font-mono text-xs">{containerInfo.container_name}</span>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(containerInfo.container_name || '')
-                      flash('已复制容器名称')
-                    }}
-                    className="text-dark-text-secondary hover:text-dark-text transition-colors"
-                    title="复制容器名称"
-                  >
-                    <Copy size={12} />
-                  </button>
-                </span>
-
-                <span className="text-dark-text-secondary">容器状态</span>
-                <span className="flex items-center gap-1.5">
-                  <span className={`inline-block w-2 h-2 rounded-full ${
-                    containerInfo.status === 'running' ? 'bg-accent-green' :
-                    containerInfo.status === 'restarting' ? 'bg-accent-red animate-pulse' :
-                    containerInfo.status === 'creating' ? 'bg-accent-yellow' : 'bg-accent-red'
-                  }`} />
-                  <span className={
-                    containerInfo.status === 'running' ? 'text-accent-green' :
-                    containerInfo.status === 'restarting' ? 'text-accent-red' :
-                    containerInfo.status === 'creating' ? 'text-accent-yellow' : 'text-dark-text-secondary'
-                  }>
-                    {containerInfo.status === 'running' ? '运行中' :
-                     containerInfo.status === 'restarting' ? '异常重启中' :
-                     containerInfo.status === 'creating' ? '创建中' :
-                     containerInfo.status === 'paused' ? '已暂停' :
-                     containerInfo.status === 'exited' ? '已停止' :
-                     containerInfo.status === 'archived' ? '已归档' : containerInfo.status}
+              <>
+                <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2.5 text-sm">
+                  <span className="text-dark-text-secondary">容器名称</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-dark-text font-mono text-xs">{containerInfo.container_name}</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(containerInfo.container_name || '')
+                        flash('已复制容器名称')
+                      }}
+                      className="text-dark-text-secondary hover:text-dark-text transition-colors"
+                      title="复制容器名称"
+                    >
+                      <Copy size={12} />
+                    </button>
                   </span>
-                </span>
 
-                <span className="text-dark-text-secondary">创建时间</span>
-                <span className="text-dark-text text-xs">
-                  {containerInfo.created_at ? new Date(containerInfo.created_at).toLocaleString('zh-CN') : '-'}
-                </span>
-              </div>
+                  <span className="text-dark-text-secondary">容器状态</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className={`inline-block w-2 h-2 rounded-full ${
+                      containerInfo.status === 'running' ? 'bg-accent-green' :
+                      containerInfo.status === 'restarting' ? 'bg-accent-red animate-pulse' :
+                      containerInfo.status === 'creating' ? 'bg-accent-yellow' : 'bg-accent-red'
+                    }`} />
+                    <span className={
+                      containerInfo.status === 'running' ? 'text-accent-green' :
+                      containerInfo.status === 'restarting' ? 'text-accent-red' :
+                      containerInfo.status === 'creating' ? 'text-accent-yellow' : 'text-dark-text-secondary'
+                    }>
+                      {containerInfo.status === 'running' ? '运行中' :
+                       containerInfo.status === 'restarting' ? '异常重启中' :
+                       containerInfo.status === 'creating' ? '创建中' :
+                       containerInfo.status === 'paused' ? '已暂停' :
+                       containerInfo.status === 'exited' ? '已停止' :
+                       containerInfo.status === 'archived' ? '已归档' : containerInfo.status}
+                    </span>
+                  </span>
+
+                  <span className="text-dark-text-secondary">创建时间</span>
+                  <span className="text-dark-text text-xs">
+                    {containerInfo.created_at ? new Date(containerInfo.created_at).toLocaleString('zh-CN') : '-'}
+                  </span>
+                </div>
+
+                {containerInfo.ports && containerInfo.ports.filter(function(p) { return p.host_port; }).length > 0 && (
+                  <div className="mt-3 rounded-lg bg-dark-bg p-3 border border-dark-border">
+                    <span className="text-xs font-medium text-dark-text-secondary">端口映射</span>
+                    <div className="mt-2 space-y-1">
+                      {containerInfo.ports.filter(function(p) { return p.host_port; }).map(function(p) {
+                        return (
+                          <div key={p.container_port} className="flex items-center gap-2 text-xs font-mono">
+                            <span className="text-dark-text-secondary">{p.container_port}</span>
+                            <span className="text-dark-text-secondary">{'→'}</span>
+                            <span className="text-dark-text">{p.host_port}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <p className="text-sm text-dark-text-secondary">暂无容器</p>
             )}

@@ -48,12 +48,23 @@ async def container_info(
     short_id = user.id[:8]
     container_name = f"openclaw-user-{short_id}"
 
-    # Get real Docker status (may differ from DB, e.g. restarting)
+    # Get real Docker status and port mappings
     docker_status = container.status
+    ports: list[dict] = []
     try:
         client = docker.from_env()
         dc = client.containers.get(container.docker_id)
-        docker_status = dc.status  # "running", "restarting", "exited", etc.
+        docker_status = dc.status
+        # Extract port mappings: {container_port: [{HostIp, HostPort}]}
+        port_bindings = dc.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+        for container_port, bindings in port_bindings.items():
+            entry: dict = {"container_port": container_port, "host_port": None}
+            if bindings:
+                host_port = bindings[0].get("HostPort", "")
+                host_ip = bindings[0].get("HostIp", "0.0.0.0")
+                if host_port:
+                    entry["host_port"] = f"{host_ip}:{host_port}"
+            ports.append(entry)
     except Exception:
         pass
 
@@ -62,6 +73,7 @@ async def container_info(
         "status": docker_status,
         "docker_id": container.docker_id,
         "created_at": container.created_at.isoformat() if container.created_at else None,
+        "ports": ports,
     }
 
 

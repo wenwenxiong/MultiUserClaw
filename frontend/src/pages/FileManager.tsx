@@ -104,7 +104,7 @@ export default function FileManager() {
     const blobUrl = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = blobUrl
-    a.download = entry.name
+    a.download = entry.type === 'directory' ? `${entry.name}.zip` : entry.name
     a.click()
     URL.revokeObjectURL(blobUrl)
   }
@@ -321,15 +321,13 @@ export default function FileManager() {
 
                       {/* Actions */}
                       <div className="flex items-center justify-end gap-2">
-                        {!isDir && (
-                          <button
-                            onClick={() => handleDownload(entry)}
-                            className="text-dark-text-secondary hover:text-accent-blue transition-colors"
-                            title="下载"
-                          >
-                            <Download size={14} />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => handleDownload(entry)}
+                          className="text-dark-text-secondary hover:text-accent-blue transition-colors"
+                          title={isDir ? '下载为 ZIP' : '下载'}
+                        >
+                          <Download size={14} />
+                        </button>
                         <button
                           onClick={() => handleDelete(entry)}
                           disabled={isDeleting}

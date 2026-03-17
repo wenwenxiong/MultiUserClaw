@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import multer from "multer";
 import mime from "mime-types";
+import archiver from "archiver";
 import type { BridgeConfig } from "../config.js";
 import { asyncHandler, sanitizePath } from "../utils.js";
 
@@ -125,8 +126,26 @@ export function filemanagerRoutes(config: BridgeConfig): Router {
     }
 
     const absPath = sanitizePath(relPath, rootDir);
-    if (!absPath || !fs.existsSync(absPath) || fs.statSync(absPath).isDirectory()) {
-      res.status(404).json({ detail: "File not found" });
+    if (!absPath || !fs.existsSync(absPath)) {
+      res.status(404).json({ detail: "Path not found" });
+      return;
+    }
+
+    const stat = fs.statSync(absPath);
+
+    if (stat.isDirectory()) {
+      // Zip the directory and stream it
+      const dirName = path.basename(absPath);
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(dirName)}.zip"`);
+
+      const archive = archiver("zip", { zlib: { level: 6 } });
+      archive.on("error", (err: Error) => {
+        res.status(500).json({ detail: err.message });
+      });
+      archive.pipe(res);
+      archive.directory(absPath, dirName);
+      await archive.finalize();
       return;
     }
 

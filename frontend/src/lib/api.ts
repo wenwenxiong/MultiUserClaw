@@ -360,6 +360,12 @@ export async function listSkills(): Promise<Skill[]> {
   return fetchJSON<Skill[]>('/api/openclaw/skills')
 }
 
+export async function deleteSkill(name: string): Promise<void> {
+  await fetchJSON(`/api/openclaw/skills/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+}
+
 export async function toggleSkill(name: string, enabled: boolean): Promise<void> {
   await fetchJSON(`/api/openclaw/skills/${encodeURIComponent(name)}/toggle`, {
     method: 'PUT',
@@ -404,11 +410,17 @@ export async function ping(): Promise<{ message: string }> {
 // Container Info & Maintenance
 // ---------------------------------------------------------------------------
 
+export interface ContainerPort {
+  container_port: string
+  host_port: string | null
+}
+
 export interface ContainerInfo {
   container_name: string | null
   status: string
   docker_id: string | null
   created_at: string | null
+  ports?: ContainerPort[]
 }
 
 export async function getContainerInfo(): Promise<ContainerInfo> {
