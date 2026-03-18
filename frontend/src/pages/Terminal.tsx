@@ -2,6 +2,29 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertCircle, Monitor, Plug, PlugZap, TerminalSquare, Trash2 } from 'lucide-react'
 import { getAccessToken } from '../lib/api'
 
+function base64UrlDecode(value: string): string {
+  const base = value.replace(/-/g, '+').replace(/_/g, '/')
+  const pad = base.length % 4 === 0 ? '' : '='.repeat(4 - (base.length % 4))
+  return atob(base + pad)
+}
+
+function getTokenSubject(token: string): string {
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return 'anonymous'
+    const payload = JSON.parse(base64UrlDecode(parts[1]))
+    const sub = String(payload?.sub ?? '').trim()
+    return sub || 'anonymous'
+  } catch {
+    return 'anonymous'
+  }
+}
+
+function getTerminalSessionKey(token: string): string {
+  const sub = getTokenSubject(token)
+  return `terminal:${window.location.host}:${sub}`
+}
+
 export default function TerminalPage() {
   const [termConnected, setTermConnected] = useState(false)
   const [termOutput, setTermOutput] = useState('')
@@ -10,6 +33,7 @@ export default function TerminalPage() {
   const [termWs, setTermWs] = useState<WebSocket | null>(null)
   const [error, setError] = useState('')
   const outputRef = useRef<HTMLDivElement | null>(null)
+  const connectingRef = useRef(false)
 
   useEffect(() => {
     if (!outputRef.current) return
@@ -25,7 +49,8 @@ export default function TerminalPage() {
   }, [termWs])
 
   const connectTerminal = () => {
-    if (termWs && termWs.readyState === WebSocket.OPEN) return
+    if (connectingRef.current) return
+    if (termWs && (termWs.readyState === WebSocket.OPEN || termWs.readyState === WebSocket.CONNECTING)) return
 
     const token = getAccessToken()
     if (!token) {
@@ -36,19 +61,28 @@ export default function TerminalPage() {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsUrl = `${proto}://${window.location.host}/api/openclaw/terminal/ws?token=${encodeURIComponent(token)}`
     const ws = new WebSocket(wsUrl)
+    const sessionKey = getTerminalSessionKey(token)
+    connectingRef.current = true
 
     ws.onopen = () => {
+      connectingRef.current = false
       setTermConnected(true)
       setTermOutput((prev) => `${prev}\n[connected] terminal websocket connected\n`)
-      ws.send(JSON.stringify({ type: 'start', command: termCommand }))
+      ws.send(JSON.stringify({
+        type: 'init',
+        session_key: sessionKey,
+        command: termCommand,
+      }))
     }
 
     ws.onclose = () => {
+      connectingRef.current = false
       setTermConnected(false)
       setTermOutput((prev) => `${prev}\n[disconnected] terminal websocket closed\n`)
     }
 
     ws.onerror = () => {
+      connectingRef.current = false
       setTermOutput((prev) => `${prev}\n[error] websocket error\n`)
     }
 
@@ -57,6 +91,10 @@ export default function TerminalPage() {
         const msg = JSON.parse(String(evt.data))
         if (msg.type === 'output') {
           setTermOutput((prev) => prev + String(msg.data ?? ''))
+        } else if (msg.type === 'session') {
+          const reused = Boolean(msg.reused)
+          const key = String(msg.session_key ?? '')
+          setTermOutput((prev) => `${prev}[session] ${key || 'unknown'} ${reused ? '(reused)' : '(new)'}\n`)
         } else if (msg.type === 'started') {
           setTermOutput((prev) => `${prev}[started] ${String(msg.command ?? '')}\n`)
         } else if (msg.type === 'exit') {
@@ -75,6 +113,7 @@ export default function TerminalPage() {
   const disconnectTerminal = () => {
     if (!termWs) return
     try { termWs.close() } catch { /* ignore */ }
+    connectingRef.current = false
     setTermWs(null)
     setTermConnected(false)
   }
