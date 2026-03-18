@@ -1,6 +1,7 @@
-import { Bell, Settings, LogOut } from 'lucide-react'
+import { Settings, LogOut } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { ping, logout } from '../lib/api'
+import NotificationBell from './NotificationBell'
 
 export default function TopBar() {
   const [online, setOnline] = useState(false)
@@ -28,12 +29,7 @@ export default function TopBar() {
           }`} />
           {online ? '服务运行中' : '服务离线'}
         </div>
-        <button className="relative text-dark-text-secondary hover:text-dark-text">
-          <Bell size={20} />
-          <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent-red text-[10px] text-white">
-            3
-          </span>
-        </button>
+        <NotificationBell />
         <button className="text-dark-text-secondary hover:text-dark-text">
           <Settings size={20} />
         </button>
