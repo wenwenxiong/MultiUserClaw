@@ -1,6 +1,6 @@
-# MultiUserClaw - 多用户 AI Claw平台。
+# MultiUserClaw - 多用户 AI Sass OpenClaw平台。
 
-基于Openclaw（其它分支有nanobot)改造的轻量级 AI 助手框架，支持多租户隔离部署、多平台渠道接入、工具调用、定时任务和 Web 实时通信。
+基于Openclaw（其它分支有nanobot)改造的轻量级 AI 助手框架，可以很快打造商用Sass平台，支持多租户隔离部署、多平台渠道接入、工具调用、定时任务和 Web 实时通信。
 
 在线体验地址，可以直接注册一个账号即可使用，或者使用账号openclaw，密码:welcome，进行测试
 
