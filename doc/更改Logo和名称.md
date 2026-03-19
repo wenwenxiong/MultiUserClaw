@@ -5,3 +5,5 @@ frontend/index.html
 
 ## 2. 修改
 frontend/src/components/Brand.tsx
+## 3. 登录页面修改
+frontend/src/pages/Login.tsx
