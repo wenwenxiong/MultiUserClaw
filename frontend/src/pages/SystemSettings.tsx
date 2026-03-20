@@ -112,17 +112,26 @@ export default function SystemSettings() {
     }
   }
 
+  const [configError, setConfigError] = useState('')
+
   const handleRestart = async () => {
     if (!confirm('确定要重启网关？重启期间服务将短暂不可用。')) return
     setRestarting(true)
     setError('')
+    setConfigError('')
     try {
       await restartGateway()
       flash('网关已重启')
       // Reload status after restart
       setTimeout(() => loadData(), 1000)
     } catch (err: any) {
-      setError(err?.message || '重启失败')
+      const msg = err?.message || '重启失败'
+      // Config validation errors contain "Invalid config" from openclaw doctor
+      if (msg.includes('Invalid config')) {
+        setConfigError(msg)
+      } else {
+        setError(msg)
+      }
     } finally {
       setRestarting(false)
     }
@@ -161,6 +170,18 @@ export default function SystemSettings() {
           <AlertCircle size={16} />
           {error}
           <button onClick={() => setError('')} className="ml-auto"><X size={14} /></button>
+        </div>
+      )}
+      {configError && (
+        <div className="mb-4 rounded-lg bg-accent-red/10 p-4 text-sm text-accent-red">
+          <div className="flex items-center gap-2 mb-2 font-medium">
+            <AlertCircle size={16} />
+            配置检查未通过，请修正后再重启网关
+            <button onClick={() => setConfigError('')} className="ml-auto"><X size={14} /></button>
+          </div>
+          <pre className="text-xs font-mono whitespace-pre-wrap text-accent-red/80 bg-accent-red/5 rounded p-2 mt-1">
+            {configError}
+          </pre>
         </div>
       )}
       {successMsg && (

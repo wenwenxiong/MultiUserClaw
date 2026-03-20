@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { BridgeConfig } from "../config.js";
@@ -48,10 +49,63 @@ export function settingsRoutes(config: BridgeConfig, manager?: GatewayRestartabl
     res.json({ success: true, config: existing });
   }));
 
-  // POST /api/settings/gateway/restart — restart the gateway process
+  // POST /api/settings/gateway/restart — validate config then restart the gateway process
   router.post("/settings/gateway/restart", asyncHandler(async (_req, res) => {
     if (!manager) {
       res.status(501).json({ detail: "Gateway restart not supported in this mode" });
+      return;
+    }
+
+    // Validate config with `openclaw doctor --non-interactive` before restarting
+    const openclawDir = process.env.OPENCLAW_DIR || path.resolve(process.cwd());
+    const openclawMjs = path.join(openclawDir, "openclaw.mjs");
+    const doctorEnv = {
+      ...process.env,
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_STATE_DIR: config.openclawHome,
+    };
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          [openclawMjs, "doctor", "--non-interactive"],
+          { cwd: openclawDir, env: doctorEnv, timeout: 30_000 },
+          (err, stdout, stderr) => {
+            const output = (stdout || "") + (stderr || "");
+            // Check for "Invalid config" in output — doctor exits 0 even with config warnings
+            if (output.includes("Invalid config")) {
+              // Extract the error lines after "Invalid config"
+              const lines = output.split("\n");
+              const errorLines: string[] = [];
+              let capturing = false;
+              for (const line of lines) {
+                if (line.includes("Invalid config")) {
+                  capturing = true;
+                  errorLines.push(line);
+                } else if (capturing && line.trimStart().startsWith("-")) {
+                  errorLines.push(line);
+                } else if (capturing) {
+                  break;
+                }
+              }
+              reject(new Error(errorLines.join("\n") || output));
+              return;
+            }
+            if (err) {
+              reject(new Error(`Config validation failed: ${output || err.message}`));
+              return;
+            }
+            resolve();
+          },
+        );
+      });
+    } catch (err) {
+      res.status(400).json({
+        success: false,
+        message: "配置检查未通过，请修正后再重启网关",
+        detail: (err as Error).message,
+      });
       return;
     }
 

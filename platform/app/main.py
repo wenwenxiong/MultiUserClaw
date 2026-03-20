@@ -87,6 +87,45 @@ async def _ensure_admin_user() -> None:
         logger.info("Created admin user '%s'", settings.admin_username)
 
 
+async def _migrate_add_missing_columns() -> None:
+    """Detect columns defined in ORM models but missing from the DB, and ADD them.
+
+    This is a lightweight auto-migration for simple column additions (no renames,
+    no type changes, no drops).  Sufficient for iterative development without a
+    full Alembic setup.
+    """
+    from sqlalchemy import inspect as sa_inspect, text
+
+    async with engine.connect() as conn:
+        for table in Base.metadata.sorted_tables:
+            try:
+                db_columns = await conn.run_sync(
+                    lambda sync_conn, t=table.name: {
+                        c["name"] for c in sa_inspect(sync_conn).get_columns(t)
+                    }
+                )
+            except Exception:
+                # Table doesn't exist yet — create_all will handle it
+                continue
+
+            for col in table.columns:
+                if col.name in db_columns:
+                    continue
+
+                # Build column type SQL
+                col_type = col.type.compile(engine.dialect)
+                nullable = "NULL" if col.nullable else "NOT NULL"
+                default_clause = ""
+                if col.server_default is not None:
+                    default_clause = f" DEFAULT {col.server_default.arg.text}"
+
+                ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type} {nullable}{default_clause}'
+                logger.info("Auto-migration: %s", ddl)
+                await conn.execute(text(ddl))
+
+        await conn.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_settings_summary()
@@ -95,6 +134,8 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables verified")
+    # Add any columns that exist in models but not yet in the DB
+    await _migrate_add_missing_columns()
     await _ensure_admin_user()
     yield
     await engine.dispose()

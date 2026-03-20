@@ -8,6 +8,7 @@ mkdir -p "$OPENCLAW_HOME/workspace"
 mkdir -p "$OPENCLAW_HOME/uploads"
 mkdir -p "$OPENCLAW_HOME/sessions"
 mkdir -p "$OPENCLAW_HOME/skills"
+mkdir -p "$OPENCLAW_HOME/extensions"
 mkdir -p "$OPENCLAW_HOME/agents"
 
 #如果不存在默认openclaw.json文件，初始化1个空的
@@ -95,6 +96,20 @@ if [ -d /deploy-copy ]; then
     fi
   fi
 
+  # Sync extensions (openclaw plugins)
+  if [ -d /deploy-copy/extensions ]; then
+    mkdir -p "$OPENCLAW_HOME/extensions"
+    find /deploy-copy/extensions -type f | while read src; do
+      rel="${src#/deploy-copy/extensions/}"
+      dst="$OPENCLAW_HOME/extensions/$rel"
+      if [ ! -f "$dst" ]; then
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst"
+        echo "[entrypoint]   + extensions/$rel"
+      fi
+    done
+  fi
+
   # Sync skills
   if [ -d /deploy-copy/skills ]; then
     find /deploy-copy/skills -type f | while read src; do
@@ -108,31 +123,63 @@ if [ -d /deploy-copy ]; then
     done
   fi
 
-  # Merge openclaw_defaults.json into openclaw.json (add missing top-level keys only)
-  if [ -f /deploy-copy/openclaw_defaults.json ] && [ -f "$OPENCLAW_HOME/openclaw.json" ]; then
+  # Deep merge openclaw_defaults.json into openclaw.json (add missing keys at any depth)
+  if [ -f /deploy-copy/openclaw_defaults.json ]; then
     if command -v node &> /dev/null; then
       node -e "
         const fs = require('fs');
-        const defaults = JSON.parse(fs.readFileSync('/deploy-copy/openclaw_defaults.json', 'utf-8'));
+        const defaultsPath = '/deploy-copy/openclaw_defaults.json';
         const configPath = '$OPENCLAW_HOME/openclaw.json';
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        let changed = false;
-        for (const [key, value] of Object.entries(defaults)) {
-          if (!(key in config)) {
-            config[key] = value;
-            changed = true;
-          } else if (typeof value === 'object' && value && typeof config[key] === 'object' && config[key]) {
-            for (const [sk, sv] of Object.entries(value)) {
-              if (!(sk in config[key])) {
-                config[key][sk] = sv;
-                changed = true;
-              }
-            }
-          }
+        const defaults = JSON.parse(fs.readFileSync(defaultsPath, 'utf-8'));
+
+        // If config doesn't exist, just copy defaults
+        if (!fs.existsSync(configPath)) {
+          fs.writeFileSync(configPath, JSON.stringify(defaults, null, 2));
+          console.log('[entrypoint]   Created openclaw.json from defaults');
+          process.exit(0);
         }
-        if (changed) {
+
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+        // Recursive deep merge: add missing keys without overwriting existing leaf values
+        // For arrays of objects with 'id' field, merge by matching id
+        function deepMerge(base, override) {
+          let changed = false;
+          for (const [key, value] of Object.entries(override)) {
+            if (!(key in base)) {
+              base[key] = JSON.parse(JSON.stringify(value));
+              changed = true;
+            } else if (value && typeof value === 'object' && !Array.isArray(value)
+                       && base[key] && typeof base[key] === 'object' && !Array.isArray(base[key])) {
+              if (deepMerge(base[key], value)) changed = true;
+            } else if (Array.isArray(value) && Array.isArray(base[key])) {
+              // For arrays of objects with 'id', merge by id
+              if (value.length > 0 && value[0] && typeof value[0] === 'object' && 'id' in value[0]
+                  && base[key].length > 0 && base[key][0] && typeof base[key][0] === 'object' && 'id' in base[key][0]) {
+                const baseById = {};
+                for (const item of base[key]) {
+                  if (item && typeof item === 'object' && 'id' in item) baseById[item.id] = item;
+                }
+                for (const overrideItem of value) {
+                  if (!overrideItem || typeof overrideItem !== 'object' || !('id' in overrideItem)) continue;
+                  if (overrideItem.id in baseById) {
+                    if (deepMerge(baseById[overrideItem.id], overrideItem)) changed = true;
+                  } else {
+                    base[key].push(JSON.parse(JSON.stringify(overrideItem)));
+                    changed = true;
+                  }
+                }
+              }
+              // Other arrays: keep base value, don't overwrite
+            }
+            // Other types (string, number, bool): keep base value, don't overwrite
+          }
+          return changed;
+        }
+
+        if (deepMerge(config, defaults)) {
           fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-          console.log('[entrypoint]   Merged openclaw_defaults.json');
+          console.log('[entrypoint]   Deep merged openclaw_defaults.json');
         }
       "
     fi
