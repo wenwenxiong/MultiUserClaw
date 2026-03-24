@@ -85,6 +85,51 @@ async def create_user(db: AsyncSession, username: str, email: str, password: str
     return user
 
 
+async def get_user_by_sso_uid(db: AsyncSession, sso_uid: str) -> User | None:
+    result = await db.execute(select(User).where(User.sso_uid == sso_uid))
+    return result.scalar_one_or_none()
+
+
+async def create_or_update_sso_user(
+    db: AsyncSession,
+    sso_uid: str,
+    sso_token: str,
+    display_name: str = "",
+) -> User:
+    """Create or update a user from InfoX-Med SSO login.
+
+    Only stores sso_uid (for mapping) and sso_token (for container injection).
+    """
+    user = await get_user_by_sso_uid(db, sso_uid)
+    if user is not None:
+        # Update token on each login
+        user.sso_token = sso_token
+        await db.commit()
+        await db.refresh(user)
+        return user
+
+    # Create new user — use display_name or uid as username
+    import secrets
+    username = display_name or f"infox_{sso_uid}"
+    # Ensure unique username
+    existing = await get_user_by_username(db, username)
+    if existing:
+        username = f"{username}_{sso_uid}"
+
+    random_pw = secrets.token_urlsafe(24)
+    user = User(
+        username=username,
+        email=f"{sso_uid}@infox-med.sso",
+        password_hash=hash_password(random_pw),
+        sso_uid=sso_uid,
+        sso_token=sso_token,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 class AuthFailureReason:
     USER_NOT_FOUND = "user_not_found"
     ACCOUNT_DISABLED = "account_disabled"

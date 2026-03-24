@@ -84,6 +84,30 @@ export interface Skill {
   disabled?: boolean
 }
 
+export interface SlashCommandInfo {
+  name: string
+  description: string
+  argument_hint: string | null
+  aliases: string[]
+  category: string
+  scope: 'text' | 'native' | 'both'
+  source: 'builtin' | 'skill'
+  skill_name: string | null
+}
+
+export interface SlashCommandsResult {
+  agentId: string
+  commands: SlashCommandInfo[]
+}
+
+export interface AgentRunWaitResult {
+  runId: string
+  status: 'ok' | 'error' | 'timeout'
+  startedAt: number | null
+  endedAt: number | null
+  error: unknown
+}
+
 // ---------------------------------------------------------------------------
 // Token management
 // ---------------------------------------------------------------------------
@@ -222,6 +246,15 @@ export async function login(
   return data
 }
 
+export async function ssoLogin(infoxToken: string): Promise<TokenResponse> {
+  const data = await fetchJSON<TokenResponse>('/api/auth/sso', {
+    method: 'POST',
+    body: JSON.stringify({ infox_token: infoxToken }),
+  })
+  setTokens(data.access_token, data.refresh_token)
+  return data
+}
+
 export function logout(): void {
   clearTokens()
   window.location.href = '/login'
@@ -344,6 +377,16 @@ export async function sendChatMessage(
   )
 }
 
+export async function waitForAgentRun(
+  runId: string,
+  timeoutMs = 25000,
+): Promise<AgentRunWaitResult> {
+  const params = new URLSearchParams({ timeoutMs: String(timeoutMs) })
+  return fetchJSON<AgentRunWaitResult>(
+    `/api/openclaw/runs/${encodeURIComponent(runId)}/wait?${params.toString()}`,
+  )
+}
+
 export async function uploadFileToWorkspace(
   file: File,
   targetDir = 'workspace/uploads',
@@ -371,6 +414,11 @@ export async function uploadFileToWorkspace(
 // ---------------------------------------------------------------------------
 // Other
 // ---------------------------------------------------------------------------
+
+export async function listSlashCommands(agentId?: string): Promise<SlashCommandsResult> {
+  const params = agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''
+  return fetchJSON<SlashCommandsResult>(`/api/openclaw/commands${params}`)
+}
 
 export async function listSkills(): Promise<Skill[]> {
   return fetchJSON<Skill[]>('/api/openclaw/skills')

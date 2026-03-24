@@ -538,3 +538,18 @@ openclaw/Dockerfile.bridge 已经包含了完整的 openclaw 主程序（COPY . 
   数据库
 
   - 执行了 ALTER TABLE users ADD COLUMN sso_uid / sso_token，无需重建表
+
+# slash斜杠命令
+openclaw/src/auto-reply/commands-registry.ts
+
+
+# 回答需要刷新才能显示完整的多轮回答的Bug
+问题根因基本就是前端之前把“本轮结束”判断错了。它虽然 POST /messages 时已经拿到了 runId，但后续没有用，而是用“会话里已经出现 assistant 消息”来
+  猜测是否结束；这在 agent 还没完全回答完时就可能提前停掉，于是你只能刷新后才看到补全内容。
+
+  我已经改成按 runId 等待真实完成。bridge 新增了 GET /api/runs/:runId/wait，直接调用 openclaw 原生 agent.wait，见 openclaw/bridge/routes/
+  sessions.ts:142。前端发送消息后会拿返回的 runId 去等这轮真正结束，再刷新当前 session，见 frontend/src/pages/Chat.tsx:388 和 frontend/src/
+  pages/Chat.tsx:508。对应 API 封装在 frontend/src/lib/api.ts:103 和 frontend/src/lib/api.ts:377。
+
+  验证上，frontend 的 npm run build 已通过，bridge/routes/sessions.ts 也做了模块加载校验。因为这次改了 bridge，你本地用 python start_local.py 的
+  话需要重启这一套服务后再试；前端热更新不够，后端等待接口要重启后才会生效。

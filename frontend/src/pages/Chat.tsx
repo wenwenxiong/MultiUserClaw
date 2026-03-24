@@ -23,11 +23,20 @@ import {
   getSession,
   deleteSession,
   sendChatMessage,
+  waitForAgentRun,
   listAgents,
+  listSlashCommands,
   uploadFileToWorkspace,
   getAccessToken,
 } from '../lib/api'
 import type { Session, SessionDetail, AgentInfo } from '../lib/api'
+import {
+  buildSlashCommandItems,
+  CATEGORY_LABELS,
+  filterSlashCommands,
+  getSlashQuery,
+  type SlashCommandItem,
+} from '../lib/slashCommands'
 
 interface PendingFile {
   id: string
@@ -130,13 +139,32 @@ export default function Chat() {
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const [agentsLoading, setAgentsLoading] = useState(false)
   const [defaultAgentId, setDefaultAgentId] = useState('')
+  const [slashCommands, setSlashCommands] = useState<SlashCommandItem[]>(buildSlashCommandItems([]))
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const activeSessionKeyRef = useRef<string | null>(null)
+  const slashMenuRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [])
+
+  const getAgentDisplayName = useCallback((agentId: string) => {
+    const agent = agents.find(item => item.id === agentId)
+    if (!agent) return agentId
+    return agent.identity?.name || agent.name || agent.id
+  }, [agents])
+
+  const loadAgentsCatalog = useCallback(async () => {
+    try {
+      const result = await listAgents()
+      setAgents(result.agents || [])
+      setDefaultAgentId(result.defaultId || '')
+    } catch {
+      setAgents([])
+    }
   }, [])
 
   useEffect(() => {
@@ -159,6 +187,33 @@ export default function Chat() {
   useEffect(() => {
     fetchSessions()
   }, [fetchSessions])
+
+  useEffect(() => {
+    loadAgentsCatalog()
+  }, [loadAgentsCatalog])
+
+  useEffect(() => {
+    let cancelled = false
+    const agentId = activeSessionKey ? getAgentIdFromKey(activeSessionKey) : undefined
+
+    const fetchSlashCommands = async () => {
+      try {
+        const result = await listSlashCommands(agentId)
+        if (!cancelled) {
+          setSlashCommands(buildSlashCommandItems(result.commands || []))
+        }
+      } catch {
+        if (!cancelled) {
+          setSlashCommands([])
+        }
+      }
+    }
+
+    fetchSlashCommands()
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionKey])
 
   // Restore session from URL param
   useEffect(() => {
@@ -207,9 +262,7 @@ export default function Chat() {
     setShowNewSession(true)
     setAgentsLoading(true)
     try {
-      const result = await listAgents()
-      setAgents(result.agents || [])
-      setDefaultAgentId(result.defaultId || '')
+      await loadAgentsCatalog()
     } catch {
       setAgents([])
     } finally {
@@ -332,10 +385,10 @@ export default function Chat() {
       setStreamingText('')
       const baselineAssistantCount = messages.filter(msg => msg.role === 'assistant').length
       registerPendingSession(activeSessionKey, baselineAssistantCount)
-      await sendChatMessage(activeSessionKey, finalMessage)
+      const sendResult = await sendChatMessage(activeSessionKey, finalMessage)
 
-      // Wait for response (WebSocket for completion signal + polling for intermediate updates)
-      await waitForResponse(activeSessionKey, messages.length + 1)
+      // Wait for response completion by runId; SSE still handles incremental text.
+      await waitForResponse(activeSessionKey, sendResult.runId)
       fetchSessions()
     } catch (err: any) {
       if (activeSessionKey) clearPendingSession(activeSessionKey)
@@ -452,35 +505,55 @@ export default function Chat() {
     }
   }, [handleChatEvent])
 
-  const waitForResponse = async (key: string, _minMessages: number) => {
-    // SSE handles streaming and completion. This just waits for SSE to signal done,
-    // with a fallback poll every 10s in case SSE is disconnected.
+  const waitForResponse = async (key: string, runId: string | null) => {
+    // SSE handles incremental display. Completion should come from runId-based
+    // waiting so we don't mistake a partial assistant message for a finished turn.
     sseCompletedRef.current = false
     const maxWaitMs = 240000 // 4 minutes max
-    const fallbackInterval = 10000 // poll every 10s as fallback
+    const perRequestTimeoutMs = 25000
     const startTime = Date.now()
 
     while (Date.now() - startTime < maxWaitMs) {
-      await new Promise(r => setTimeout(r, 2000))
-
       if (sseCompletedRef.current) return
       if (key !== activeSessionKeyRef.current) return
 
-      // Fallback: if SSE is disconnected, poll less frequently
-      const elapsed = Date.now() - startTime
-      if (elapsed > fallbackInterval && elapsed % fallbackInterval < 2500) {
+      if (runId) {
         try {
-          const detail = await getSession(key)
-          const msgs = detail.messages || []
-          const hasReply = msgs.some((m, idx) => idx >= _minMessages && m.role === 'assistant')
-          if (hasReply && !targetTextRef.current) {
-            // SSE missed the events — load messages directly
-            setMessages(msgs)
-            setStreamingText('')
-            sseCompletedRef.current = true
-            return
+          const remainingMs = maxWaitMs - (Date.now() - startTime)
+          const waitResult = await waitForAgentRun(runId, Math.min(perRequestTimeoutMs, remainingMs))
+
+          if (sseCompletedRef.current) return
+          if (key !== activeSessionKeyRef.current) return
+
+          if (waitResult.status === 'timeout') {
+            continue
           }
-        } catch {}
+
+          const detail = await getSession(key)
+          setMessages(detail.messages || [])
+          setStreamingText('')
+          sseCompletedRef.current = true
+          return
+        } catch {
+          await new Promise(r => setTimeout(r, 1500))
+          continue
+        }
+      }
+
+      // Legacy fallback if backend doesn't return a runId.
+      await new Promise(r => setTimeout(r, 3000))
+      try {
+        const detail = await getSession(key)
+        const msgs = detail.messages || []
+        const lastMsg = msgs[msgs.length - 1]
+        if (lastMsg?.role === 'assistant' && !targetTextRef.current) {
+          setMessages(msgs)
+          setStreamingText('')
+          sseCompletedRef.current = true
+          return
+        }
+      } catch {
+        // ignore and keep waiting
       }
     }
 
@@ -494,6 +567,28 @@ export default function Chat() {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (showSlashMenu && filteredSlashCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashActiveIndex(prev => (prev + 1) % filteredSlashCommands.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashActiveIndex(prev => (prev - 1 + filteredSlashCommands.length) % filteredSlashCommands.length)
+        return
+      }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.nativeEvent.isComposing) {
+        e.preventDefault()
+        applySlashCommand(filteredSlashCommands[slashActiveIndex] || filteredSlashCommands[0])
+        return
+      }
+    }
+    if (showSlashMenu && e.key === 'Escape') {
+      e.preventDefault()
+      setSlashActiveIndex(0)
+      return
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       handleSend()
@@ -517,6 +612,40 @@ export default function Chat() {
   }
 
   const hasContent = input.trim() || pendingFiles.length > 0
+  const slashQuery = getSlashQuery(input)
+  const filteredSlashCommands = filterSlashCommands(slashCommands, slashQuery || '')
+  const showSlashMenu = Boolean(activeSessionKey && slashQuery !== null)
+  const groupedSlashCommands = filteredSlashCommands.reduce<Record<string, SlashCommandItem[]>>((acc, command) => {
+    const key = command.category
+    if (!acc[key]) acc[key] = []
+    acc[key].push(command)
+    return acc
+  }, {})
+
+  useEffect(() => {
+    setSlashActiveIndex(0)
+  }, [slashQuery])
+
+  useEffect(() => {
+    if (!showSlashMenu || filteredSlashCommands.length === 0) return
+    if (slashActiveIndex >= filteredSlashCommands.length) {
+      setSlashActiveIndex(0)
+    }
+  }, [showSlashMenu, filteredSlashCommands, slashActiveIndex])
+
+  useEffect(() => {
+    if (!showSlashMenu) return
+    const activeButton = slashMenuRef.current?.querySelector<HTMLButtonElement>('[data-active="true"]')
+    activeButton?.scrollIntoView({ block: 'nearest' })
+  }, [showSlashMenu, slashActiveIndex])
+
+  const applySlashCommand = (command: SlashCommandItem) => {
+    setInput(`/${command.name} `)
+    setSlashActiveIndex(0)
+    setTimeout(() => {
+      inputRef.current?.focus()
+    }, 0)
+  }
 
   return (
     <div className="flex h-[calc(100vh-3rem)] -m-6">
@@ -559,8 +688,11 @@ export default function Chat() {
                     <div className="text-xs font-medium truncate">
                       {s.title || s.key}
                     </div>
-                    <div className="text-[10px] text-dark-text-secondary mt-0.5">
-                      {formatTime(s.updated_at)}
+                    <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-dark-text-secondary">
+                      <span>{formatTime(s.updated_at)}</span>
+                      <span className="rounded-full border border-dark-border bg-dark-bg/80 px-1.5 py-0.5 text-[9px] font-medium text-dark-text-secondary">
+                        {getAgentDisplayName(getAgentIdFromKey(s.key))}
+                      </span>
                     </div>
                   </div>
                   <button
@@ -759,18 +891,81 @@ export default function Chat() {
                   onChange={handleFileSelect}
                   className="hidden"
                 />
-                <textarea
-                  ref={inputRef}
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  onPaste={handlePaste}
-                  placeholder={pendingFiles.length > 0 ? '添加说明（可选）...' : '输入消息，可粘贴图片...'}
-                  rows={1}
-                  className="flex-1 rounded-xl border border-dark-border bg-dark-card px-4 py-2.5 text-sm text-dark-text outline-none focus:border-accent-blue placeholder:text-dark-text-secondary resize-none max-h-32"
-                  style={{ minHeight: '40px' }}
-                  disabled={sending}
-                />
+                <div className="relative flex-1">
+                  {showSlashMenu && (
+                    <div
+                      ref={slashMenuRef}
+                      className="absolute bottom-full left-0 right-0 mb-2 max-h-72 overflow-y-auto rounded-2xl border border-dark-border bg-dark-card shadow-2xl"
+                    >
+                      {filteredSlashCommands.length === 0 ? (
+                        <div className="px-4 py-3 text-sm text-dark-text-secondary">
+                          没有匹配的斜杠命令
+                        </div>
+                      ) : (
+                        Object.entries(groupedSlashCommands).map(([category, commands]) => (
+                          <div key={category} className="border-b border-dark-border/60 last:border-b-0">
+                            <div className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-dark-text-secondary">
+                              {CATEGORY_LABELS[category as keyof typeof CATEGORY_LABELS]}
+                            </div>
+                            <div className="pb-2">
+                              {commands.map(command => {
+                                const index = filteredSlashCommands.findIndex(item => item.name === command.name)
+                                const isActive = index === slashActiveIndex
+                                return (
+                                  <button
+                                    key={`${command.source}-${command.name}`}
+                                    type="button"
+                                    data-active={isActive ? 'true' : 'false'}
+                                    onMouseEnter={() => setSlashActiveIndex(index)}
+                                    onClick={() => applySlashCommand(command)}
+                                    className={`flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors ${
+                                      isActive ? 'bg-accent-blue/12' : 'hover:bg-dark-card-hover'
+                                    }`}
+                                  >
+                                    <div className={`mt-0.5 rounded-md px-2 py-1 text-[11px] font-semibold ${
+                                      command.source === 'skill'
+                                        ? 'bg-accent-purple/12 text-accent-purple'
+                                        : 'bg-accent-blue/12 text-accent-blue'
+                                    }`}>
+                                      /
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-2">
+                                        <span className={`text-sm font-medium ${isActive ? 'text-accent-blue' : 'text-dark-text'}`}>
+                                          /{command.name}
+                                        </span>
+                                        {command.argsHint && (
+                                          <span className="truncate text-xs text-dark-text-secondary">
+                                            {command.argsHint}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="mt-0.5 text-xs text-dark-text-secondary">
+                                        {command.description}
+                                      </div>
+                                    </div>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                  <textarea
+                    ref={inputRef}
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    placeholder={pendingFiles.length > 0 ? '添加说明（可选）...' : '输入消息，可粘贴图片，输入 / 可选命令...'}
+                    rows={1}
+                    className="flex-1 w-full rounded-xl border border-dark-border bg-dark-card px-4 py-2.5 text-sm text-dark-text outline-none focus:border-accent-blue placeholder:text-dark-text-secondary resize-none max-h-32"
+                    style={{ minHeight: '40px' }}
+                    disabled={sending}
+                  />
+                </div>
                 <button
                   onClick={handleSend}
                   disabled={!hasContent || sending}
