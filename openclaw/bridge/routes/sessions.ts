@@ -47,7 +47,7 @@ export function sessionsRoutes(client: BridgeGatewayClient): Router {
       });
 
       const sessions = (result.sessions || []).map((s: OpenclawSessionRow) => {
-        const rawTitle = String(s.derivedTitle || s.displayName || "");
+        const rawTitle = String(s.displayName || s.derivedTitle || "");
         const cleaned = cleanSessionTitle(rawTitle);
         // If title was all metadata (cleaned to empty), try lastMessagePreview as fallback
         const lastPreview = typeof s.lastMessagePreview === "string"
@@ -134,6 +134,57 @@ export function sessionsRoutes(client: BridgeGatewayClient): Router {
 
       const result = await client.request<Record<string, unknown>>("chat.send", params);
       res.json({ ok: true, runId: result.runId || null });
+    } catch (err) {
+      res.status(500).json({ detail: (err as Error).message });
+    }
+  }));
+
+  // PUT /api/sessions/:key/title — set or clear a custom session title
+  router.put("/sessions/:key(*)/title", asyncHandler(async (req, res) => {
+    const key = toOpenclawSessionKey(req.params.key);
+    const rawTitle = req.body?.title;
+    const title = typeof rawTitle === "string" ? rawTitle.trim() : "";
+
+    try {
+      const result = await client.request<Record<string, unknown>>("sessions.patch", {
+        key,
+        label: title || null,
+      });
+      res.json({
+        ok: true,
+        key: toNanobotSessionId(String(result.key || key)),
+        title: title || null,
+      });
+    } catch (err) {
+      res.status(500).json({ detail: (err as Error).message });
+    }
+  }));
+
+  // GET /api/runs/:runId/wait — wait for a specific agent/chat run to finish
+  router.get("/runs/:runId/wait", asyncHandler(async (req, res) => {
+    const runId = String(req.params.runId || "").trim();
+    const rawTimeout = Number(req.query.timeoutMs);
+    const timeoutMs = Number.isFinite(rawTimeout)
+      ? Math.max(0, Math.min(30_000, Math.floor(rawTimeout)))
+      : 25_000;
+
+    if (!runId) {
+      res.status(400).json({ detail: "runId is required" });
+      return;
+    }
+
+    try {
+      const result = await client.request<Record<string, unknown>>("agent.wait", {
+        runId,
+        timeoutMs,
+      });
+      res.json({
+        runId,
+        status: result.status || "timeout",
+        startedAt: result.startedAt || null,
+        endedAt: result.endedAt || null,
+        error: result.error || null,
+      });
     } catch (err) {
       res.status(500).json({ detail: (err as Error).message });
     }

@@ -1,6 +1,8 @@
-import type { OpenClawConfig, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk/zalouser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import "./monitor.send-mocks.js";
+import "./zalo-js.test-mocks.js";
+import { resolveZalouserAccountSync } from "./accounts.js";
 import { __testing } from "./monitor.js";
 import {
   sendDeliveredZalouserMock,
@@ -9,6 +11,7 @@ import {
   sendTypingZalouserMock,
 } from "./monitor.send-mocks.js";
 import { setZalouserRuntime } from "./runtime.js";
+import { createZalouserRuntimeEnv } from "./test-helpers.js";
 import type { ResolvedZalouserAccount, ZaloInboundMessage } from "./types.js";
 
 function createAccount(): ResolvedZalouserAccount {
@@ -39,15 +42,7 @@ function createConfig(): OpenClawConfig {
   };
 }
 
-function createRuntimeEnv(): RuntimeEnv {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    exit: ((code: number): never => {
-      throw new Error(`exit ${code}`);
-    }) as RuntimeEnv["exit"],
-  };
-}
+const createRuntimeEnv = () => createZalouserRuntimeEnv();
 
 function installRuntime(params: {
   commandAuthorized?: boolean;
@@ -269,7 +264,7 @@ describe("zalouser monitor group mention gating", () => {
       message: params.message,
       account: params.account ?? createAccount(),
       config: createConfig(),
-      runtime: createRuntimeEnv(),
+      runtime: createZalouserRuntimeEnv(),
       historyState: params.historyState,
     });
   }
@@ -383,6 +378,34 @@ describe("zalouser monitor group mention gating", () => {
     await expectSkippedGroupMessage();
   });
 
+  it("blocks mentioned group messages by default when groupPolicy is omitted", async () => {
+    const { dispatchReplyWithBufferedBlockDispatcher } = installRuntime({
+      commandAuthorized: false,
+    });
+    const cfg: OpenClawConfig = {
+      channels: {
+        zalouser: {
+          enabled: true,
+        },
+      },
+    };
+    const account = resolveZalouserAccountSync({ cfg, accountId: "default" });
+
+    await __testing.processMessage({
+      message: createGroupMessage({
+        content: "ping @bot",
+        hasAnyMention: true,
+        wasExplicitlyMentioned: true,
+      }),
+      account,
+      config: cfg,
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(account.config.groupPolicy).toBe("allowlist");
+    expect(dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
   it("fails closed when requireMention=true but mention detection is unavailable", async () => {
     await expectSkippedGroupMessage({
       canResolveExplicitMention: false,
@@ -484,7 +507,37 @@ describe("zalouser monitor group mention gating", () => {
     });
   });
 
-  it("blocks group messages when sender is not in groupAllowFrom/allowFrom", async () => {
+  it("allows allowlisted group replies without inheriting the DM allowlist", async () => {
+    const { dispatchReplyWithBufferedBlockDispatcher } = installRuntime({
+      commandAuthorized: false,
+      replyPayload: { text: "ok" },
+    });
+    await __testing.processMessage({
+      message: createGroupMessage({
+        content: "ping @bot",
+        hasAnyMention: true,
+        wasExplicitlyMentioned: true,
+        senderId: "456",
+      }),
+      account: {
+        ...createAccount(),
+        config: {
+          ...createAccount().config,
+          groupPolicy: "allowlist",
+          allowFrom: ["123"],
+          groups: {
+            "group:g-1": { allow: true, requireMention: true },
+          },
+        },
+      },
+      config: createConfig(),
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks group messages when sender is not in groupAllowFrom", async () => {
     const { dispatchReplyWithBufferedBlockDispatcher } = installRuntime({
       commandAuthorized: false,
     });
@@ -500,6 +553,7 @@ describe("zalouser monitor group mention gating", () => {
           ...createAccount().config,
           groupPolicy: "allowlist",
           allowFrom: ["999"],
+          groupAllowFrom: ["999"],
         },
       },
       config: createConfig(),

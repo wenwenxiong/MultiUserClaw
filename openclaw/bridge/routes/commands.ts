@@ -1,7 +1,10 @@
 import { Router } from "express";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import { listAgentIds, resolveAgentSkillsFilter, resolveAgentWorkspaceDir } from "../../src/agents/agent-scope.js";
+import { listChatCommandsForConfig, type ChatCommandDefinition } from "../../src/auto-reply/commands-registry.js";
+import type { CommandArgDefinition, CommandCategory, CommandScope } from "../../src/auto-reply/commands-registry.types.js";
+import { listSkillCommandsForWorkspace } from "../../src/auto-reply/skill-commands.js";
+import { loadConfig } from "../../src/config/config.js";
+import { normalizeAgentId } from "../../src/routing/session-key.js";
 import type { BridgeConfig } from "../config.js";
 import { asyncHandler } from "../utils.js";
 
@@ -9,103 +12,86 @@ interface CommandInfo {
   name: string;
   description: string;
   argument_hint: string | null;
-  plugin_name: string;
+  aliases: string[];
+  category: CommandCategory | "skills" | "other";
+  scope: CommandScope;
+  source: "builtin" | "skill";
+  skill_name: string | null;
 }
 
-const BUILTIN_COMMANDS: CommandInfo[] = [
-  { name: "new", description: "Start a new conversation", argument_hint: null, plugin_name: "builtin" },
-  { name: "help", description: "Show available commands", argument_hint: null, plugin_name: "builtin" },
-];
+function formatArgHint(args?: CommandArgDefinition[]): string | null {
+  if (!args || args.length === 0) {
+    return null;
+  }
+  const parts = args.map((arg) => {
+    const base = arg.captureRemaining ? `${arg.name}...` : arg.name;
+    return arg.required ? `<${base}>` : `[${base}]`;
+  });
+  return parts.join(" ");
+}
 
-function scanPluginCommands(pluginsDir: string): CommandInfo[] {
-  const commands: CommandInfo[] = [];
-  if (!fs.existsSync(pluginsDir)) return commands;
-
-  for (const pluginName of fs.readdirSync(pluginsDir)) {
-    const cmdDir = path.join(pluginsDir, pluginName, "commands");
-    if (!fs.existsSync(cmdDir)) continue;
-
-    for (const file of fs.readdirSync(cmdDir)) {
-      if (!file.endsWith(".md")) continue;
-      const content = fs.readFileSync(path.join(cmdDir, file), "utf-8");
-
-      let description = "";
-      let argumentHint: string | null = null;
-      let inFrontmatter = false;
-
-      for (const line of content.split("\n")) {
-        if (line.trim() === "---") {
-          inFrontmatter = !inFrontmatter;
-          continue;
-        }
-        if (inFrontmatter) {
-          const descMatch = line.match(/^description:\s*(.+)/);
-          if (descMatch) description = descMatch[1].trim();
-          const hintMatch = line.match(/^argument-hint:\s*(.+)/);
-          if (hintMatch) argumentHint = hintMatch[1].trim();
-        }
-      }
-
-      commands.push({
-        name: path.basename(file, ".md"),
-        description,
-        argument_hint: argumentHint,
-        plugin_name: pluginName,
-      });
-    }
+function toCommandInfo(command: ChatCommandDefinition): CommandInfo | null {
+  const aliases = command.textAliases
+    .map((alias) => alias.trim())
+    .filter((alias) => alias.startsWith("/"));
+  if (aliases.length === 0) {
+    return null;
   }
 
-  return commands;
+  const primaryAlias = aliases[0]!;
+  const source = command.key.startsWith("skill:") ? "skill" : "builtin";
+  const skillName = source === "skill" ? command.key.slice("skill:".length) : null;
+
+  return {
+    name: primaryAlias.slice(1),
+    description: command.description,
+    argument_hint: formatArgHint(command.args),
+    aliases: aliases.map((alias) => alias.slice(1)),
+    category: source === "skill" ? "skills" : (command.category ?? "other"),
+    scope: command.scope,
+    source,
+    skill_name: skillName,
+  };
 }
 
-export function commandsRoutes(config: BridgeConfig): Router {
+function resolveAgentIdFromQuery(agentIdRaw: unknown): string {
+  if (typeof agentIdRaw !== "string") {
+    return "";
+  }
+  return normalizeAgentId(agentIdRaw);
+}
+
+export function commandsRoutes(_config: BridgeConfig): Router {
   const router = Router();
 
-  // GET /api/commands
-  router.get("/commands", asyncHandler(async (_req, res) => {
-    const commands = [...BUILTIN_COMMANDS];
+  // GET /api/commands?agentId=main
+  router.get("/commands", asyncHandler(async (req, res) => {
+    const cfg = loadConfig();
+    const requestedAgentId = resolveAgentIdFromQuery(req.query.agentId);
+    const knownAgents = listAgentIds(cfg);
+    const agentId = requestedAgentId || knownAgents[0] || "main";
 
-    // Scan plugin commands
-    const globalPluginsDir = path.join(os.homedir(), ".nanobot", "plugins");
-    const workspacePluginsDir = path.join(config.workspacePath, "plugins");
-
-    commands.push(...scanPluginCommands(globalPluginsDir));
-    commands.push(...scanPluginCommands(workspacePluginsDir));
-
-    // Add skills as commands (excluding collisions)
-    const existingNames = new Set(commands.map((c) => c.name));
-    const skillsDir = path.join(config.workspacePath, "skills");
-    const builtinSkillsDir = path.resolve(process.cwd(), "skills");
-
-    for (const dir of [builtinSkillsDir, skillsDir]) {
-      if (!fs.existsSync(dir)) continue;
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (!entry.isDirectory() || existingNames.has(entry.name)) continue;
-        const skillMd = path.join(dir, entry.name, "SKILL.md");
-        if (!fs.existsSync(skillMd)) continue;
-
-        const content = fs.readFileSync(skillMd, "utf-8");
-        let description = "";
-        let inFm = false;
-        for (const line of content.split("\n")) {
-          if (line.trim() === "---") { inFm = !inFm; continue; }
-          if (inFm) {
-            const m = line.match(/^description:\s*(.+)/);
-            if (m) description = m[1].trim();
-          }
-        }
-
-        commands.push({
-          name: entry.name,
-          description,
-          argument_hint: null,
-          plugin_name: "skill",
-        });
-        existingNames.add(entry.name);
-      }
+    if (requestedAgentId && !knownAgents.includes(agentId)) {
+      res.status(400).json({ detail: `Unknown agent id: ${requestedAgentId}` });
+      return;
     }
 
-    res.json(commands);
+    const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const skillFilter = resolveAgentSkillsFilter(cfg, agentId);
+    const skillCommands = listSkillCommandsForWorkspace({
+      workspaceDir,
+      cfg,
+      skillFilter,
+    });
+
+    const commands = listChatCommandsForConfig(cfg, { skillCommands })
+      .map(toCommandInfo)
+      .filter((command): command is CommandInfo => command !== null);
+
+    res.json({
+      agentId,
+      commands,
+    });
   }));
 
   return router;

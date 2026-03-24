@@ -5,6 +5,7 @@ import {
   Send,
   Loader2,
   Trash2,
+  Pencil,
   MessageSquare,
   Bot,
   User,
@@ -22,6 +23,7 @@ import {
   listSessions,
   getSession,
   deleteSession,
+  updateSessionTitle,
   sendChatMessage,
   waitForAgentRun,
   listAgents,
@@ -84,6 +86,9 @@ export default function Chat() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [activeSessionKey, setActiveSessionKey] = useState<string | null>(null)
+  const [renamingSessionKey, setRenamingSessionKey] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameSaving, setRenameSaving] = useState(false)
 
   // Chat
   const [messages, setMessages] = useState<SessionDetail['messages']>([])
@@ -257,6 +262,31 @@ export default function Chat() {
       // ignore
     }
   }
+
+  const handleStartRename = (session: Session, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setRenamingSessionKey(session.key)
+    setRenameValue(session.title || '')
+  }
+
+  const handleCancelRename = useCallback(() => {
+    setRenamingSessionKey(null)
+    setRenameValue('')
+    setRenameSaving(false)
+  }, [])
+
+  const handleSaveRename = useCallback(async (key: string) => {
+    if (renameSaving) return
+    setRenameSaving(true)
+    try {
+      await updateSessionTitle(key, renameValue)
+      await fetchSessions()
+      handleCancelRename()
+    } catch (err: any) {
+      setError(err?.message || '重命名失败')
+      setRenameSaving(false)
+    }
+  }, [fetchSessions, handleCancelRename, renameSaving, renameValue])
 
   const handleNewSession = async () => {
     setShowNewSession(true)
@@ -673,36 +703,100 @@ export default function Chat() {
             </div>
           ) : (
             <div className="py-1">
-              {sessions.map(s => (
-                <button
-                  key={s.key}
-                  onClick={() => loadSession(s.key)}
-                  className={`w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors group ${
-                    activeSessionKey === s.key
-                      ? 'bg-accent-blue/10 text-accent-blue'
-                      : 'text-dark-text-secondary hover:bg-dark-card hover:text-dark-text'
-                  }`}
-                >
-                  <MessageSquare size={14} className="shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium truncate">
-                      {s.title || s.key}
-                    </div>
-                    <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-dark-text-secondary">
-                      <span>{formatTime(s.updated_at)}</span>
-                      <span className="rounded-full border border-dark-border bg-dark-bg/80 px-1.5 py-0.5 text-[9px] font-medium text-dark-text-secondary">
-                        {getAgentDisplayName(getAgentIdFromKey(s.key))}
-                      </span>
+              {sessions.map(s => {
+                const isRenaming = renamingSessionKey === s.key
+                const isActive = activeSessionKey === s.key
+
+                return (
+                  <div
+                    key={s.key}
+                    className={`group flex items-center gap-2 px-3 py-2.5 transition-colors ${
+                      isActive
+                        ? 'bg-accent-blue/10 text-accent-blue'
+                        : 'text-dark-text-secondary hover:bg-dark-card hover:text-dark-text'
+                    }`}
+                  >
+                    <button
+                      onClick={() => !isRenaming && loadSession(s.key)}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      disabled={isRenaming}
+                    >
+                      <MessageSquare size={14} className="shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        {isRenaming ? (
+                          <input
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                void handleSaveRename(s.key)
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault()
+                                handleCancelRename()
+                              }
+                            }}
+                            className="w-full rounded border border-accent-blue/40 bg-dark-bg px-2 py-1 text-xs font-medium text-dark-text outline-none focus:border-accent-blue"
+                            placeholder="输入会话标题"
+                            autoFocus
+                          />
+                        ) : (
+                          <div className="text-xs font-medium truncate">
+                            {s.title || s.key}
+                          </div>
+                        )}
+                        <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-dark-text-secondary">
+                          <span>{formatTime(s.updated_at)}</span>
+                          <span className="rounded-full border border-dark-border bg-dark-bg/80 px-1.5 py-0.5 text-[9px] font-medium text-dark-text-secondary">
+                            {getAgentDisplayName(getAgentIdFromKey(s.key))}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+
+                    <div className="flex shrink-0 items-center gap-1">
+                      {isRenaming ? (
+                        <>
+                          <button
+                            onClick={() => void handleSaveRename(s.key)}
+                            className="text-dark-text-secondary hover:text-accent-blue transition-colors"
+                            title="保存标题"
+                            disabled={renameSaving}
+                          >
+                            {renameSaving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                          </button>
+                          <button
+                            onClick={handleCancelRename}
+                            className="text-dark-text-secondary hover:text-dark-text transition-colors"
+                            title="取消"
+                            disabled={renameSaving}
+                          >
+                            <X size={12} />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={(e) => handleStartRename(s, e)}
+                            className="opacity-0 group-hover:opacity-100 text-dark-text-secondary hover:text-dark-text transition-all"
+                            title="重命名"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => handleDeleteSession(s.key, e)}
+                            className="opacity-0 group-hover:opacity-100 text-dark-text-secondary hover:text-accent-red transition-all"
+                            title="删除"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => handleDeleteSession(s.key, e)}
-                    className="opacity-0 group-hover:opacity-100 text-dark-text-secondary hover:text-accent-red transition-all shrink-0"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </button>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

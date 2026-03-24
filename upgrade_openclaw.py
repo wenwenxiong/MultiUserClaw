@@ -111,6 +111,7 @@ def files_are_identical(file1: Path, file2: Path) -> bool:
 
 def confirm(prompt: str) -> bool:
     """请求用户确认"""
+    return True
     while True:
         answer = input(f"{prompt} [y/n]: ").strip().lower()
         if answer in ("y", "yes"):

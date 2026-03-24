@@ -360,6 +360,19 @@ export async function deleteSession(key: string): Promise<void> {
   })
 }
 
+export async function updateSessionTitle(
+  key: string,
+  title: string,
+): Promise<{ ok: boolean; key: string; title: string | null }> {
+  return fetchJSON<{ ok: boolean; key: string; title: string | null }>(
+    `/api/openclaw/sessions/${encodeURIComponent(key)}/title`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    },
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Chat functions
 // ---------------------------------------------------------------------------

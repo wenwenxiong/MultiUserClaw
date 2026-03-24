@@ -1,17 +1,15 @@
 {
+  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "Node16",
-    "outDir": "bridge/dist",
-    "rootDir": "bridge",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
+    "allowImportingTsExtensions": false,
+    "noEmit": false,
     "declaration": false,
+    "declarationMap": false,
     "sourceMap": true,
-    "resolveJsonModule": true
+    "outDir": "bridge/dist",
+    "rootDir": ".",
+    "tsBuildInfoFile": "bridge/dist/.tsbuildinfo"
   },
-  "include": ["bridge/**/*.ts"],
-  "exclude": ["node_modules", "bridge/dist"]
+  "include": ["bridge/**/*.ts", "src/**/*.ts", "extensions/**/*.ts"],
+  "exclude": ["node_modules", "dist", "bridge/dist", "**/*.test.ts"]
 }

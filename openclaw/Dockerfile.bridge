@@ -45,8 +45,12 @@ WORKDIR /app
 ENV PATH="/app/node_modules/.bin:$PATH"
 
 # Install openclaw dependencies
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches/ ./patches/
+COPY ui/ ./ui/
+COPY bridge/ ./bridge/
+COPY packages/ ./packages/
+COPY extensions/ ./extensions/
 RUN npm install -g pnpm tsx && pnpm install --frozen-lockfile
 
 # Copy openclaw source and build
@@ -69,9 +73,6 @@ WORKDIR /app
 COPY bridge-package.json /app/bridge/package.json
 RUN cd bridge && npm install --production=false
 
-# Build bridge TypeScript
-RUN cd bridge && npx tsc -p /app/tsconfig.bridge.json
-
 WORKDIR /app
 
 # Copy deploy templates (workspace, skills, config defaults)
@@ -84,4 +85,4 @@ COPY bridge-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "bridge/dist/start.js"]
+CMD ["node", "--import", "tsx", "bridge/start.ts"]

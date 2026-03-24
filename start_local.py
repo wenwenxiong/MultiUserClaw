@@ -761,8 +761,52 @@ def _sync_dir(src: str, dst: str) -> int:
     return copied
 
 
+def _deep_merge(base: dict, override: dict) -> bool:
+    """递归深度合并 override 到 base（不覆盖 base 已有的叶子值）。
+
+    对于 list 类型：如果两边都是 list[dict] 且元素有 "id" 字段，
+    按 id 匹配后递归合并每个元素；否则保留 base 的值不覆盖。
+    返回是否有变更。
+    """
+    changed = False
+    for key, value in override.items():
+        if key not in base:
+            # base 中不存在，直接用 override 的值（深拷贝）
+            import copy
+            base[key] = copy.deepcopy(value)
+            changed = True
+        elif isinstance(value, dict) and isinstance(base[key], dict):
+            # 两边都是 dict，递归合并
+            if _deep_merge(base[key], value):
+                changed = True
+        elif isinstance(value, list) and isinstance(base[key], list):
+            # 两边都是 list：尝试按 id 匹配合并（适用于 agents.list）
+            if (value and isinstance(value[0], dict) and "id" in value[0]
+                    and base[key] and isinstance(base[key][0], dict) and "id" in base[key][0]):
+                base_by_id = {item["id"]: item for item in base[key] if isinstance(item, dict) and "id" in item}
+                for override_item in value:
+                    if not isinstance(override_item, dict) or "id" not in override_item:
+                        continue
+                    item_id = override_item["id"]
+                    if item_id in base_by_id:
+                        # 已有同 id 条目，递归合并其字段
+                        if _deep_merge(base_by_id[item_id], override_item):
+                            changed = True
+                    else:
+                        # base 中没有此 id，追加
+                        import copy
+                        base[key].append(copy.deepcopy(override_item))
+                        changed = True
+            # 其他 list 情况：保留 base 的值，不覆盖
+        # 其他类型（str, int, bool 等）：base 已有值，不覆盖
+    return changed
+
+
 def _merge_openclaw_defaults(defaults_path: str, config_path: str):
-    """将 defaults 中的配置项浅合并到 openclaw.json（不覆盖已有顶层 key）。"""
+    """将 defaults 中的配置项深度合并到 openclaw.json（不覆盖已有叶子值）。
+
+    如果 openclaw.json 不存在，直接深拷贝 defaults 作为初始配置。
+    """
     try:
         with open(defaults_path) as f:
             defaults = json.load(f)
@@ -770,6 +814,11 @@ def _merge_openclaw_defaults(defaults_path: str, config_path: str):
         return
 
     if not os.path.isfile(config_path):
+        # 配置文件不存在，直接用 defaults 创建
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(defaults, f, indent=2, ensure_ascii=False)
+        log("  从 openclaw_defaults.json 创建 openclaw.json")
         return
 
     try:
@@ -778,22 +827,10 @@ def _merge_openclaw_defaults(defaults_path: str, config_path: str):
     except (json.JSONDecodeError, OSError):
         return
 
-    changed = False
-    for key, value in defaults.items():
-        if key not in config:
-            config[key] = value
-            changed = True
-        elif isinstance(value, dict) and isinstance(config[key], dict):
-            # 二级合并：仅添加不存在的子 key
-            for sub_key, sub_value in value.items():
-                if sub_key not in config[key]:
-                    config[key][sub_key] = sub_value
-                    changed = True
-
-    if changed:
+    if _deep_merge(config, defaults):
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
-        log("  合并 openclaw_defaults.json → openclaw.json")
+        log("  深度合并 openclaw_defaults.json → openclaw.json")
 
 
 # ── 主入口 ────────────────────────────────────────────────────────────
