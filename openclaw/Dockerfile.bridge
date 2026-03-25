@@ -55,6 +55,12 @@ RUN npm install -g pnpm tsx && pnpm install --frozen-lockfile
 
 # Copy openclaw source and build
 COPY . .
+# Clean stale compiled JS files so tsdown regenerates them.
+# Exclude a2ui.bundle.js and .bundle.hash (prebuilt artifacts needed for Docker builds).
+RUN find /app/src -name "*.js" -type f ! -path "*/node_modules/*" ! -name "a2ui.bundle.js" -delete && \
+    find /app/extensions -name "*.js" -type f ! -path "*/node_modules/*" -delete && \
+    find /app/src -name "*.js.map" -type f ! -path "*/node_modules/*" ! -name "a2ui.bundle.hash" -delete && \
+    find /app/extensions -name "*.js.map" -type f ! -path "*/node_modules/*" -delete
 RUN pnpm build
 # 安装openclaw命令到/usr/local/bin/openclaw
 RUN npm install -g .
@@ -72,6 +78,7 @@ RUN npm install -g agent-browser
 WORKDIR /app
 COPY bridge-package.json /app/bridge/package.json
 RUN cd bridge && npm install --production=false
+RUN cd /app/bridge && npx tsc -p /app/tsconfig.bridge.json
 
 WORKDIR /app
 

@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     openrouter_api_key: str = ""
     dashscope_api_key: str = ""
+    minimax_api_key: str = ""
+    minimax_api_base: str = "https://api.minimax.io/v1"
     aihubmix_api_key: str = ""
     moonshot_api_key: str = ""
     kimi_api_key: str = ""

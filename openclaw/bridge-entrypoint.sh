@@ -37,7 +37,6 @@ if [ -d /deploy-copy ]; then
         rel="${src#$agent_src}"
         dst="$workspace_dir/$rel"
         if [ ! -f "$dst" ]; then
-          mkdir -p "$(dirname "$dst")"
           cp "$src" "$dst"
           echo "[entrypoint]   + workspace-$agent_id/$rel"
         fi
@@ -103,7 +102,9 @@ if [ -d /deploy-copy ]; then
       rel="${src#/deploy-copy/extensions/}"
       dst="$OPENCLAW_HOME/extensions/$rel"
       if [ ! -f "$dst" ]; then
-        mkdir -p "$(dirname "$dst")"
+        parent="$(dirname "$dst")"
+        if [ -f "$parent" ]; then rm -rf "$parent"; fi
+        mkdir -p "$parent"
         cp "$src" "$dst"
         echo "[entrypoint]   + extensions/$rel"
       fi
@@ -116,7 +117,9 @@ if [ -d /deploy-copy ]; then
       rel="${src#/deploy-copy/skills/}"
       dst="$OPENCLAW_HOME/skills/$rel"
       if [ ! -f "$dst" ]; then
-        mkdir -p "$(dirname "$dst")"
+        parent="$(dirname "$dst")"
+        if [ -f "$parent" ]; then rm -rf "$parent"; fi
+        mkdir -p "$parent"
         cp "$src" "$dst"
         echo "[entrypoint]   + skills/$rel"
       fi

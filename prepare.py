@@ -137,6 +137,7 @@ _ALL_API_KEYS = [
     "DEEPSEEK_API_KEY",
     "OPENROUTER_API_KEY",
     "DASHSCOPE_API_KEY",
+    "MINIMAX_API_KEY",
     "AIHUBMIX_API_KEY",
     "MOONSHOT_API_KEY",
     "ZHIPU_API_KEY",
@@ -195,8 +196,10 @@ def check_env_file(fix: bool) -> CheckResult:
             "deepseek":   "DEEPSEEK_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
             "dashscope":  "DASHSCOPE_API_KEY",
+            "minimax":    "MINIMAX_API_KEY",
             "aihubmix":   "AIHUBMIX_API_KEY",
             "moonshot":   "MOONSHOT_API_KEY",
+            "kimi":       "KIMI_API_KEY",
             "zhipu":      "ZHIPU_API_KEY",
             "vllm":       "HOSTED_VLLM_API_KEY",
         }

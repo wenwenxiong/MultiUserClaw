@@ -234,7 +234,7 @@ def start_bridge(env: dict) -> "subprocess.Popen | None":
         if npx_path:
             cmd = [npx_path, "tsx", "bridge/start.ts"]
         else:
-            cmd = ["node", "bridge/dist/start.js"]
+            cmd = ["node", "bridge/dist/bridge/start.js"]
 
     # 本地开发模式：启用渠道（飞书、Telegram 等），不跳过
     bridge_env = _base_env(BRIDGE_ENABLE_CHANNELS="1", **env)

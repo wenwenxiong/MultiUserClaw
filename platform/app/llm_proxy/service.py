@@ -61,6 +61,13 @@ _PROVIDERS: list[dict] = [
         "keywords": ["qwen"],
     },
     {
+        "prefix": "minimax",
+        "key_attr": "minimax_api_key",
+        "litellm_fmt": "minimax/{model}",
+        "api_base_attr": "minimax_api_base",
+        "keywords": ["minimax"],
+    },
+    {
         "prefix": "kimi",
         "key_attr": "kimi_api_key",
         "litellm_fmt": "openai/{model}",
@@ -105,19 +112,34 @@ for _p in _PROVIDERS:
         _KEYWORD_MAP[_kw] = _p
 
 
-def _get_provider_key_and_base(provider: dict) -> tuple[str, str | None]:
+def _normalize_minimax_api_base(api_base: str | None) -> str | None:
+    if not api_base:
+        return api_base
+    normalized = api_base.strip().rstrip("/")
+    if normalized.endswith("/anthropic/v1/messages"):
+        return normalized[: -len("/anthropic/v1/messages")] + "/v1"
+    if normalized.endswith("/anthropic/v1"):
+        return normalized[: -len("/anthropic/v1")] + "/v1"
+    if normalized.endswith("/anthropic"):
+        return normalized[: -len("/anthropic")] + "/v1"
+    return normalized
+
+
+def _get_provider_key_base_and_headers(provider: dict) -> tuple[str, str | None, dict[str, str] | None]:
     api_key = getattr(settings, provider["key_attr"], "") or ""
     if "api_base_attr" in provider:
         api_base = getattr(settings, provider["api_base_attr"], "") or None
     else:
         api_base = provider.get("api_base")
+    if provider["prefix"] == "minimax":
+        api_base = _normalize_minimax_api_base(api_base)
     if not api_key and provider["prefix"] == "vllm":
         api_key = "dummy"
-    return api_key, api_base
+    return api_key, api_base, None
 
 
-def _resolve_provider(model: str) -> tuple[str, str, str | None]:
-    """Return (litellm_model_name, api_key, api_base_or_None)."""
+def _resolve_provider(model: str) -> tuple[str, str, str | None, dict[str, str] | None]:
+    """Return (litellm_model_name, api_key, api_base_or_None, extra_headers_or_None)."""
     model_lower = model.lower()
 
     # 1. Explicit prefix
@@ -126,29 +148,29 @@ def _resolve_provider(model: str) -> tuple[str, str, str | None]:
         if prefix in _PREFIX_MAP:
             provider = _PREFIX_MAP[prefix]
             actual_model = model.split("/", 1)[1]
-            api_key, api_base = _get_provider_key_and_base(provider)
-            if api_key:
+            api_key, api_base, extra_headers = _get_provider_key_base_and_headers(provider)
+            if api_key or extra_headers:
                 litellm_model = provider["litellm_fmt"].format(model=actual_model)
                 logger.info("模型路由: %s → %s (litellm=%s)", model, prefix, litellm_model)
-                return litellm_model, api_key, api_base
+                return litellm_model, api_key, api_base, extra_headers
 
     # 2. Keyword match
     for keyword, provider in _KEYWORD_MAP.items():
         if keyword in model_lower:
-            api_key, api_base = _get_provider_key_and_base(provider)
-            if api_key:
+            api_key, api_base, extra_headers = _get_provider_key_base_and_headers(provider)
+            if api_key or extra_headers:
                 actual_model = model.split("/", 1)[1] if "/" in model else model
                 litellm_model = provider["litellm_fmt"].format(model=actual_model)
                 logger.info("模型路由: %s → %s (keyword=%r, litellm=%s)", model, provider["prefix"], keyword, litellm_model)
-                return litellm_model, api_key, api_base
+                return litellm_model, api_key, api_base, extra_headers
 
     # 3. Fallback: vLLM
     if settings.hosted_vllm_api_base:
-        return f"hosted_vllm/{model}", settings.hosted_vllm_api_key or "dummy", settings.hosted_vllm_api_base
+        return f"hosted_vllm/{model}", settings.hosted_vllm_api_key or "dummy", settings.hosted_vllm_api_base, None
 
     # 4. Fallback: OpenRouter
     if settings.openrouter_api_key:
-        return f"openrouter/{model}", settings.openrouter_api_key, None
+        return f"openrouter/{model}", settings.openrouter_api_key, None, None
 
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -219,10 +241,6 @@ _LITELLM_PASSTHROUGH_KEYS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Core proxy handler
-# ---------------------------------------------------------------------------
-
 async def proxy_chat_completion(
     db: AsyncSession,
     container_token: str,
@@ -274,7 +292,7 @@ async def proxy_chat_completion(
         await _check_quota(db, user)
 
     # 2. Resolve provider
-    litellm_model, api_key, api_base = _resolve_provider(model)
+    litellm_model, api_key, api_base, extra_headers = _resolve_provider(model)
 
     # 3. Build kwargs — pass through all known OpenAI-compatible params
     kwargs: dict = {
@@ -284,6 +302,8 @@ async def proxy_chat_completion(
     }
     if api_base:
         kwargs["api_base"] = api_base
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
 
     # Pass through all supported parameters from the original request
     for key in _LITELLM_PASSTHROUGH_KEYS:

@@ -69,6 +69,7 @@ def log_settings_summary() -> None:
         "openai": settings.openai_api_key,
         "deepseek": settings.deepseek_api_key,
         "dashscope": settings.dashscope_api_key,
+        "minimax": settings.minimax_api_key,
         "kimi": settings.kimi_api_key,
         "moonshot": settings.moonshot_api_key,
         "aihubmix": settings.aihubmix_api_key,
