@@ -460,7 +460,7 @@ export default function Chat() {
   const hasContent = input.trim().length > 0
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] -m-6">
+    <div className="flex h-[calc(100vh-3rem)] pt-6">
       {/* Session sidebar */}
       <div className="w-64 border-r border-light-border bg-light-sidebar flex flex-col shrink-0">
         <div className="px-4 py-3 border-b border-light-border flex items-center justify-between">
