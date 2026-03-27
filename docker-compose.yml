@@ -104,6 +104,19 @@ services:
     depends_on:
       - gateway
 
+  simple-front:
+    container_name: openclaw-simple
+    build:
+      context: ./simple_front
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+    ports:
+      - "3082:3000"
+    networks:
+      - openclaw-external
+    depends_on:
+      - gateway
+
 networks:
   openclaw-internal:
     name: openclaw-internal    # explicit name — prevents Compose project-name prefix

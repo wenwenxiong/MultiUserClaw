@@ -79,6 +79,11 @@ SERVICES = {
         "port": 3081,
         "color": "\033[32m",  # green
     },
+    "simple": {
+        "name": "Simple Front",
+        "port": 3082,
+        "color": "\033[95m",  # light magenta
+    },
 }
 
 
@@ -487,6 +492,35 @@ def start_manage(api_url: str = "http://127.0.0.1:8080") -> "subprocess.Popen | 
     return proc
 
 
+# ── Simple Front Dev Server ───────────────────────────────────────────
+
+def start_simple(frontend_host: str = "0.0.0.0", api_url: str = "http://127.0.0.1:8080") -> "subprocess.Popen | None":
+    log("启动 Simple Front Dev Server (端口 3082)...")
+
+    if is_port_in_use(3082):
+        warn("端口 3082 已被占用，跳过 simple")
+        return None
+
+    simple_dir = os.path.join(PROJECT_DIR, "simple_front")
+
+    if not os.path.exists(os.path.join(simple_dir, "node_modules")):
+        log("安装 simple-front 依赖...")
+        subprocess.run("npm install", cwd=simple_dir, shell=True, check=True)
+
+    dev_cmd = f"npm run dev -- --host {frontend_host} --port 3082"
+    proc = subprocess.Popen(
+        dev_cmd,
+        cwd=simple_dir,
+        env=_base_env(VITE_API_URL=api_url),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        shell=True,
+        **({"start_new_session": True} if not IS_WINDOWS else {}),
+    )
+    log(f"  PID: {proc.pid}")
+    return proc
+
+
 # ── 日志输出（跨平台：threading，不依赖 selectors/os.set_blocking）────
 
 def tail_output(procs: dict):
@@ -538,7 +572,7 @@ def stop_all():
 
 
 def _stop_all_unix():
-    patterns = ["bridge/start", "openclaw gateway", "uvicorn app.main:app", "vite.*3080", "next.*3081"]
+    patterns = ["bridge/start", "openclaw gateway", "uvicorn app.main:app", "vite.*3080", "vite.*3082", "next.*3081"]
     for pattern in patterns:
         result = subprocess.run(
             f"pgrep -f '{pattern}'",
@@ -838,7 +872,7 @@ def _merge_openclaw_defaults(defaults_path: str, config_path: str):
 def main():
     parser = argparse.ArgumentParser(description="OpenClaw 本地开发启动脚本")
     parser.add_argument("--stop", action="store_true", help="停止所有本地服务")
-    parser.add_argument("--only", type=str, help="仅启动指定服务，逗号分隔 (db,bridge,gateway,frontend)")
+    parser.add_argument("--only", type=str, help="仅启动指定服务，逗号分隔 (db,bridge,gateway,frontend,manage,simple)")
     parser.add_argument("--skip", type=str, help="跳过指定服务，逗号分隔")
     parser.add_argument("--no-tail", action="store_true", help="不跟踪日志输出")
     parser.add_argument(
@@ -870,7 +904,7 @@ def main():
         return
 
     # 解析要启动的服务
-    all_services = ["db", "bridge", "gateway", "frontend", "manage"]
+    all_services = ["db", "bridge", "gateway", "frontend", "manage", "simple"]
     enabled = [s.strip() for s in args.only.split(",")] if args.only else list(all_services)
     if args.skip:
         skip = {s.strip() for s in args.skip.split(",")}
@@ -966,6 +1000,12 @@ def main():
             proc = start_manage(api_url=frontend_api_url)
             if proc:
                 processes["manage"] = proc
+
+        # 6. Simple Front
+        if "simple" in enabled:
+            proc = start_simple(frontend_host=frontend_host, api_url=frontend_api_url)
+            if proc:
+                processes["simple"] = proc
 
         if not processes:
             success("所有服务已就绪（使用已有实例）")
