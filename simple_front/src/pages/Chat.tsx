@@ -14,6 +14,8 @@ import {
   Copy,
   Check,
   X,
+  Paperclip,
+  FileText,
 } from 'lucide-react'
 import MarkdownContent from '../components/MarkdownContent.tsx'
 import {
@@ -25,6 +27,7 @@ import {
   waitForAgentRun,
   listAgents,
   getAccessToken,
+  uploadFileToWorkspace,
 } from '../lib/api.ts'
 import type { Session, SessionDetail, AgentInfo } from '../lib/api.ts'
 
@@ -36,6 +39,34 @@ function getAgentIdFromKey(key: string): string {
   const parts = key.split(':')
   if (parts.length >= 2 && parts[0] === 'agent') return parts[1]
   return 'main'
+}
+
+/**
+ * Get the workspace upload dir for an agent.
+ * main agent → workspace/uploads
+ * other agents → workspace-<agentId>/uploads
+ */
+function getUploadDir(agentId: string): string {
+  if (agentId === 'main') return 'workspace/uploads'
+  return `workspace-${agentId}/uploads`
+}
+
+interface PendingFile {
+  id: string
+  file: File
+  name: string
+  isImage: boolean
+  previewUrl?: string
+}
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/')
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export default function Chat() {
@@ -103,6 +134,10 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const activeSessionKeyRef = useRef<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Files
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -233,10 +268,59 @@ export default function Chat() {
     setActiveSessionKey(key)
     activeSessionKeyRef.current = key
     setMessages([])
+    setPendingFiles([])
     setShowNewSession(false)
     setError('')
     setSearchParams({ session: key })
     setTimeout(() => inputRef.current?.focus(), 100)
+  }
+
+  // File handling
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
+    addFiles(Array.from(files))
+    e.target.value = ''
+  }
+
+  const addFiles = (files: File[]) => {
+    const newPending: PendingFile[] = files.map(file => {
+      const isImg = isImageFile(file)
+      const pf: PendingFile = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file,
+        name: file.name,
+        isImage: isImg,
+      }
+      if (isImg) {
+        pf.previewUrl = URL.createObjectURL(file)
+      }
+      return pf
+    })
+    setPendingFiles(prev => [...prev, ...newPending])
+  }
+
+  const removePendingFile = (id: string) => {
+    setPendingFiles(prev => {
+      const removed = prev.find(f => f.id === id)
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+      return prev.filter(f => f.id !== id)
+    })
+  }
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const imageFiles: File[] = []
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile()
+        if (file) imageFiles.push(file)
+      }
+    }
+    if (imageFiles.length > 0) {
+      addFiles(imageFiles)
+    }
   }
 
   // SSE connection for real-time chat events (replaces WebSocket)
@@ -409,22 +493,57 @@ export default function Chat() {
 
   const handleSend = async () => {
     const text = input.trim()
-    if (!text || !activeSessionKey || sending) return
+    if ((!text && pendingFiles.length === 0) || !activeSessionKey || sending) return
 
     setSending(true)
     setError('')
 
     try {
+      const agentId = getAgentIdFromKey(activeSessionKey)
+      const uploadDir = getUploadDir(agentId)
+
+      // Upload all files to agent workspace
+      const uploadedPaths: string[] = []
+      for (const pf of pendingFiles) {
+        const result = await uploadFileToWorkspace(pf.file, uploadDir)
+        uploadedPaths.push(result.path)
+      }
+
+      // Build final message with file references
+      let finalMessage = text
+      if (uploadedPaths.length > 0) {
+        const fileRefs = uploadedPaths
+          .map(p => `[附件: ~/.openclaw/${p}]`)
+          .join('\n')
+        finalMessage = finalMessage
+          ? `${finalMessage}\n\n${fileRefs}`
+          : fileRefs
+      }
+
+      // Optimistic UI
+      const displayParts: string[] = []
+      if (text) displayParts.push(text)
+      if (uploadedPaths.length > 0) {
+        uploadedPaths.forEach(p => {
+          const name = p.split('/').pop() || p
+          displayParts.push(`📎 ${name}`)
+        })
+      }
+
       const userMsg = {
         role: 'user',
-        content: text,
+        content: displayParts.join('\n'),
         timestamp: new Date().toISOString(),
       }
       setMessages(prev => [...prev, userMsg])
       setInput('')
+      pendingFiles.forEach(pf => {
+        if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl)
+      })
+      setPendingFiles([])
 
       setStreamingText('')
-      const sendResult = await sendChatMessage(activeSessionKey, text)
+      const sendResult = await sendChatMessage(activeSessionKey, finalMessage)
       await waitForResponse(activeSessionKey, sendResult.runId)
       fetchSessions()
     } catch (err: any) {
@@ -457,7 +576,7 @@ export default function Chat() {
     return `${d.getMonth() + 1}/${d.getDate()} ${time}`
   }
 
-  const hasContent = input.trim().length > 0
+  const hasContent = input.trim() || pendingFiles.length > 0
 
   return (
     <div className="flex h-[calc(100vh-3rem)] pt-6">
@@ -707,14 +826,71 @@ export default function Chat() {
               </div>
             )}
 
+            {/* Pending files preview */}
+            {pendingFiles.length > 0 && (
+              <div className="px-5 pt-2 shrink-0">
+                <div className="max-w-3xl mx-auto flex flex-wrap gap-2">
+                  {pendingFiles.map(pf => (
+                    <div
+                      key={pf.id}
+                      className="relative group rounded-lg border border-light-border bg-light-card overflow-hidden"
+                    >
+                      {pf.isImage && pf.previewUrl ? (
+                        <div className="relative">
+                          <img
+                            src={pf.previewUrl}
+                            alt={pf.name}
+                            className="h-16 w-16 object-cover"
+                          />
+                          <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-1 py-0.5">
+                            <div className="text-[9px] text-white truncate">{pf.name}</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="h-16 w-auto flex items-center gap-2 px-3">
+                          <FileText size={16} className="text-accent-blue shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-xs text-light-text truncate max-w-[120px]">{pf.name}</div>
+                            <div className="text-[10px] text-light-text-secondary">{formatFileSize(pf.file.size)}</div>
+                          </div>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => removePendingFile(pf.id)}
+                        className="absolute top-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Input */}
             <div className="px-5 py-3 border-t border-light-border shrink-0">
               <div className="max-w-3xl mx-auto flex items-end gap-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={sending}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-light-border text-light-text-secondary hover:text-accent-blue hover:border-accent-blue/30 transition-colors disabled:opacity-50"
+                  title="上传附件（图片/文件）"
+                >
+                  <Paperclip size={16} />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
                 <textarea
                   ref={inputRef}
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
                   placeholder="输入消息..."
                   rows={1}
                   className="flex-1 w-full rounded-xl border border-light-border bg-light-card px-4 py-2.5 text-sm text-light-text outline-none focus:border-accent-blue placeholder:text-light-text-secondary resize-none max-h-32"

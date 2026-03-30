@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useState } from 'react'
 import { Check, Copy } from 'lucide-react'
+import { fileDownloadLinkRenderer, remarkFileLinks } from './FileDownloadPlugin'
 
 function CodeBlock({ className, children }: { className?: string; children: React.ReactNode }) {
   const [copied, setCopied] = useState(false)
@@ -37,7 +38,7 @@ export default function MarkdownContent({ content, className = '' }: { content: 
   return (
     <div className={`markdown-body text-sm leading-relaxed ${className}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkFileLinks]}
         components={{
           // Code blocks
           code({ className, children, ...props }) {
@@ -90,14 +91,8 @@ export default function MarkdownContent({ content, className = '' }: { content: 
           thead({ children }) { return <thead className="bg-dark-bg/50">{children}</thead> },
           th({ children }) { return <th className="px-3 py-1.5 text-left font-medium text-dark-text-secondary border-b border-dark-border">{children}</th> },
           td({ children }) { return <td className="px-3 py-1.5 border-b border-dark-border/50">{children}</td> },
-          // Links
-          a({ href, children }) {
-            return (
-              <a href={href} target="_blank" rel="noreferrer" className="text-accent-blue hover:underline">
-                {children}
-              </a>
-            )
-          },
+          // Links (工作区文件路径自动渲染为下载卡片)
+          a: fileDownloadLinkRenderer,
           // Horizontal rule
           hr() { return <hr className="my-3 border-dark-border" /> },
           // Strong / Em
