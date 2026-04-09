@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
 
+    # Public-facing base URL (used to generate external access URLs in port mapping)
+    public_base_url: str = "http://www.exmaple.com"
+
     # Local dev: set to e.g. "http://127.0.0.1:18080" to skip Docker containers
     dev_openclaw_url: str = ""
 

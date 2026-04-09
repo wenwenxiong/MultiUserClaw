@@ -768,6 +768,45 @@ export async function installGitSkills(
 }
 
 // ---------------------------------------------------------------------------
+// Recommended skills (categorized marketplace)
+// ---------------------------------------------------------------------------
+
+export interface RecommendedSkill {
+  name: string
+  description: string
+  category: string
+}
+
+export interface RecommendedCategory {
+  id: string
+  name: string
+  name_en: string
+  icon: string
+  description: string
+  order: number
+  skills: RecommendedSkill[]
+}
+
+export async function getRecommendedSkills(): Promise<{ categories: RecommendedCategory[] }> {
+  return fetchJSON<{ categories: RecommendedCategory[] }>(
+    '/api/openclaw/marketplaces/recommended',
+  )
+}
+
+export async function installRecommendedSkill(
+  category: string,
+  skillName: string,
+): Promise<{ ok: boolean; name: string }> {
+  return fetchJSON<{ ok: boolean; name: string }>(
+    '/api/openclaw/marketplaces/recommended/install',
+    {
+      method: 'POST',
+      body: JSON.stringify({ category, skillName }),
+    },
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Channels
 // ---------------------------------------------------------------------------
 

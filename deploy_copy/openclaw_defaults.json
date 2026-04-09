@@ -144,10 +144,40 @@
     }
   },
 
+  "memory": {
+    "backend": "qmd",
+    "citations": "auto",
+    "qmd": {
+      "includeDefaultMemory": true,
+      "command": "/root/.openclaw/qmd-runner.sh",
+      "searchMode": "search",
+      "update": {
+        "interval": "5m",
+        "debounceMs": 15000,
+        "onBoot": true,
+        "waitForBootSync": false
+      },
+      "limits": {
+        "maxResults": 6,
+        "timeoutMs": 30000
+      },
+      "scope": {
+        "default": "deny",
+        "rules": [
+          { "action": "allow", "match": { "chatType": "direct" } }
+        ]
+      }
+    }
+  },
+
   "session": {
     "dmScope": "per-channel-peer",
     "agentToAgent": {
       "maxPingPongTurns": 3
+    },
+    "reset": {
+      "mode": "idle",
+      "idleMinutes": 10080
     }
   }
 }

@@ -13,6 +13,7 @@ export interface BridgeConfig {
   workspacePath: string;
   uploadsPath: string;
   sessionsPath: string;
+  skillsMarketplaceRepo: string;
 }
 
 function parseModelInput(raw: string | undefined): Array<"text" | "image"> {
@@ -38,6 +39,7 @@ export function loadConfig(): BridgeConfig {
   const workspacePath = process.env.OPENCLAW_WORKSPACE || path.join(openclawHome, "workspace");
   const uploadsPath = path.join(openclawHome, "uploads");
   const sessionsPath = path.join(openclawHome, "sessions");
+  const skillsMarketplaceRepo = process.env.NANOBOT_SKILLS_MARKETPLACE_REPO;
 
   return {
     proxyUrl,
@@ -50,6 +52,7 @@ export function loadConfig(): BridgeConfig {
     workspacePath,
     uploadsPath,
     sessionsPath,
+    skillsMarketplaceRepo,
   };
 }
 

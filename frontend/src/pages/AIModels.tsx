@@ -120,8 +120,15 @@ export default function AIModels() {
 
   // Pick a provider from catalog to add
   const handlePickProvider = (info: ProviderInfo) => {
+    // For custom type or re-adding same provider, generate a unique name
+    let name = info.id
+    if (configuredProviders[name]) {
+      let i = 2
+      while (configuredProviders[`${info.id}-${i}`]) i++
+      name = `${info.id}-${i}`
+    }
     setForm({
-      name: info.id,
+      name,
       baseUrl: info.defaultBaseUrl || '',
       api: info.defaultApi,
       apiKey: '',
@@ -395,29 +402,21 @@ export default function AIModels() {
                       {CATEGORY_LABELS[category]}
                     </h4>
                     <div className="grid grid-cols-2 gap-2">
-                      {items.map(info => {
-                        const alreadyAdded = !!configuredProviders[info.id]
-                        return (
+                      {items.map(info => (
                           <button
                             key={info.id}
                             onClick={() => handlePickProvider(info)}
-                            disabled={alreadyAdded}
-                            className={`flex items-center gap-2.5 rounded-lg border p-3 text-left transition-colors ${
-                              alreadyAdded
-                                ? 'border-dark-border opacity-50 cursor-not-allowed'
-                                : 'border-dark-border hover:border-accent-blue/50 hover:bg-accent-blue/5'
-                            }`}
+                            className="flex items-center gap-2.5 rounded-lg border p-3 text-left transition-colors border-dark-border hover:border-accent-blue/50 hover:bg-accent-blue/5"
                           >
                             <span className="text-xl shrink-0">{info.icon}</span>
                             <div className="min-w-0">
                               <div className="text-sm font-medium text-dark-text truncate">{info.name}</div>
-                              {alreadyAdded && (
-                                <div className="text-[10px] text-dark-text-secondary">已添加</div>
+                              {configuredProviders[info.id] && (
+                                <div className="text-[10px] text-accent-green">已添加（可再次添加）</div>
                               )}
                             </div>
                           </button>
-                        )
-                      })}
+                        ))}
                     </div>
                   </div>
                 )

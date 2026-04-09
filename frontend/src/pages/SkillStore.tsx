@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
-import { listSkills, searchSkills, installSkill, toggleSkill, deleteSkill, scanGitSkills, installGitSkills, uploadSkillZip, downloadSkillUrl, getAccessToken } from '../lib/api'
-import type { Skill, SkillSearchResult, GitScanResult } from '../lib/api'
-import { Zap, Loader2, Search, Download, ExternalLink, Check, GitBranch, Upload, Trash2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { listSkills, searchSkills, installSkill, toggleSkill, deleteSkill, scanGitSkills, installGitSkills, uploadSkillZip, downloadSkillUrl, getAccessToken, getRecommendedSkills, installRecommendedSkill } from '../lib/api'
+import type { Skill, SkillSearchResult, GitScanResult, RecommendedCategory } from '../lib/api'
+import { Zap, Loader2, Search, Download, ExternalLink, Check, GitBranch, Upload, Trash2, ChevronLeft, ChevronRight, Tag } from 'lucide-react'
 
 export default function SkillStore() {
   const [skills, setSkills] = useState<Skill[]>([])
@@ -28,6 +28,14 @@ export default function SkillStore() {
   const [uploading, setUploading] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
 
+  // Recommended skills state
+  const [recCategories, setRecCategories] = useState<RecommendedCategory[]>([])
+  const [recLoading, setRecLoading] = useState(true)
+  const [recActiveTab, setRecActiveTab] = useState<string | null>(null)
+  const [recInstalling, setRecInstalling] = useState<string | null>(null)
+  const [recInstalled, setRecInstalled] = useState<Set<string>>(new Set())
+  const scrollRef = useRef<HTMLDivElement>(null)
+
   // Git repo state
   const [gitUrl, setGitUrl] = useState('')
   const [gitScanning, setGitScanning] = useState(false)
@@ -46,7 +54,38 @@ export default function SkillStore() {
       .then(setSkills)
       .catch(() => setSkills([]))
       .finally(() => setLoading(false))
+
+    getRecommendedSkills()
+      .then(data => {
+        setRecCategories(data.categories || [])
+        if (data.categories?.length > 0) {
+          setRecActiveTab(data.categories[0].id)
+        }
+      })
+      .catch(() => setRecCategories([]))
+      .finally(() => setRecLoading(false))
   }, [])
+
+  const handleRecInstall = async (category: string, skillName: string) => {
+    if (recInstalling) return
+    setRecInstalling(skillName)
+    setInstallError('')
+    try {
+      await installRecommendedSkill(category, skillName)
+      setRecInstalled(prev => new Set(prev).add(skillName))
+      refreshSkills()
+    } catch (err: any) {
+      setInstallError(err?.message || '安装失败')
+    } finally {
+      setRecInstalling(null)
+    }
+  }
+
+  const scrollCategory = (dir: 'left' | 'right') => {
+    if (!scrollRef.current) return
+    const amount = 300
+    scrollRef.current.scrollBy({ left: dir === 'left' ? -amount : amount, behavior: 'smooth' })
+  }
 
   const handleSearch = async (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -245,6 +284,103 @@ export default function SkillStore() {
           搜索
         </button>
       </form>
+
+      {/* Recommended skills by category */}
+      {recLoading ? (
+        <div className="mb-6 flex items-center justify-center py-8">
+          <Loader2 size={20} className="animate-spin text-accent-blue" />
+          <span className="ml-2 text-sm text-dark-text-secondary">加载推荐技能...</span>
+        </div>
+      ) : recCategories.length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-3 text-base font-semibold text-dark-text flex items-center gap-2">
+            <Tag size={16} className="text-accent-purple" />
+            推荐技能
+          </h2>
+
+          {/* Category tabs with horizontal scroll */}
+          <div className="relative mb-4">
+            <button
+              onClick={() => scrollCategory('left')}
+              className="absolute left-0 top-0 z-10 flex h-full items-center bg-gradient-to-r from-dark-bg to-transparent pl-1 pr-3"
+            >
+              <ChevronLeft size={16} className="text-dark-text-secondary hover:text-dark-text" />
+            </button>
+            <div ref={scrollRef} className="flex gap-2 overflow-x-auto scrollbar-hide px-6">
+              {recCategories.map(cat => (
+                <button
+                  key={cat.id}
+                  onClick={() => setRecActiveTab(cat.id)}
+                  className={`flex shrink-0 items-center gap-1.5 rounded-full px-4 py-1.5 text-sm transition-colors ${
+                    recActiveTab === cat.id
+                      ? 'bg-accent-blue text-white'
+                      : 'bg-dark-card border border-dark-border text-dark-text-secondary hover:text-dark-text hover:border-accent-blue/30'
+                  }`}
+                >
+                  <span>{cat.icon}</span>
+                  <span>{cat.name}</span>
+                  <span className="text-xs opacity-70">({cat.skills.length})</span>
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => scrollCategory('right')}
+              className="absolute right-0 top-0 z-10 flex h-full items-center bg-gradient-to-l from-dark-bg to-transparent pr-1 pl-3"
+            >
+              <ChevronRight size={16} className="text-dark-text-secondary hover:text-dark-text" />
+            </button>
+          </div>
+
+          {/* Active category description */}
+          {recCategories.filter(c => c.id === recActiveTab).map(cat => (
+            <p key={cat.id} className="mb-3 text-xs text-dark-text-secondary">{cat.description}</p>
+          ))}
+
+          {/* Skills grid for active category */}
+          {recCategories.filter(c => c.id === recActiveTab).map(cat => (
+            <div key={cat.id} className="grid grid-cols-3 gap-3">
+              {cat.skills.map(skill => {
+                const isAlreadyInstalled = skills.some(s => s.name === skill.name)
+                const justInstalled = recInstalled.has(skill.name)
+                const isDone = isAlreadyInstalled || justInstalled
+                const isInstalling = recInstalling === skill.name
+                return (
+                  <div
+                    key={skill.name}
+                    className={`rounded-xl border p-4 transition-colors ${
+                      isDone
+                        ? 'border-accent-green/30 bg-accent-green/5'
+                        : 'border-dark-border bg-dark-card hover:border-accent-blue/30'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <h3 className="text-sm font-semibold text-dark-text truncate flex-1">{skill.name}</h3>
+                      <button
+                        onClick={() => handleRecInstall(skill.category, skill.name)}
+                        disabled={isDone || isInstalling}
+                        className={`ml-2 flex shrink-0 items-center gap-1 rounded-lg px-3 py-1 text-xs font-medium transition-colors ${
+                          isDone
+                            ? 'bg-accent-green/10 text-accent-green'
+                            : 'bg-accent-blue/10 text-accent-blue hover:bg-accent-blue/20 disabled:opacity-50'
+                        }`}
+                      >
+                        {isInstalling ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : isDone ? (
+                          <><Check size={12} /> 已安装</>
+                        ) : (
+                          <><Download size={12} /> 安装</>
+                        )}
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-xs text-dark-text-secondary leading-relaxed line-clamp-2">{skill.description}</p>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Git repo import */}
       <div className="mb-6 rounded-xl border border-dark-border bg-dark-card p-5">

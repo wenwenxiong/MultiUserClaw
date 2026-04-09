@@ -133,6 +133,9 @@ RUN npm install -g agent-browser
 # RUN agent-browser install
 # RUN npx playwright install-deps
 
+# Install qmd (memory backend for session memory system)
+RUN npm install -g @tobilu/qmd || echo "WARNING: qmd install failed, memory search will be unavailable"
+
 # Install bridge dependencies
 WORKDIR /app
 COPY bridge-package.json /app/bridge/package.json

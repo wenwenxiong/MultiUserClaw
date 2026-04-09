@@ -68,6 +68,7 @@ def _build_expose_port_skill_markdown(
     container_name: str,
     browser_binding: tuple[str, str],
     service_binding: tuple[str, str],
+    public_base_url: str = "",
 ) -> str:
     now = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime())
     lines = [
@@ -98,6 +99,27 @@ def _build_expose_port_skill_markdown(
         lines.append(f"- `30000/tcp` (service) -> `{service_ip}:{service_port}`")
     else:
         lines.append("- `30000/tcp` (service) -> `not published`")
+
+    # External access URLs (for users accessing from outside the server)
+    if public_base_url:
+        base = public_base_url.rstrip("/")
+        # Extract domain from URL (e.g. "https://openclaw.infox-med.com" -> "openclaw.infox-med.com")
+        from urllib.parse import urlparse
+        parsed = urlparse(base)
+        domain = parsed.hostname or ""
+        scheme = parsed.scheme or "https"
+
+        lines.extend(["", "## External Access URLs", ""])
+        if service_port:
+            lines.append(f"- Service URL: `{scheme}://{domain}:{service_port}`")
+        if browser_port:
+            lines.append(f"- Browser URL: `{scheme}://{domain}:{browser_port}`")
+        lines.extend([
+            "",
+            "**Important**: When the user creates a web service on port 30000 inside the container,",
+            f"tell them to access it via the Service URL above (`{scheme}://{domain}:{service_port}`).",
+            "Do NOT use `0.0.0.0` or `localhost` — those are internal addresses not reachable from outside.",
+        ])
 
     lines.extend([
         "",
@@ -318,6 +340,7 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
         container_name=container_name,
         browser_binding=browser_binding,
         service_binding=service_binding,
+        public_base_url=settings.public_base_url,
     )
     _write_expose_port_skill(docker_container, expose_markdown)
 
