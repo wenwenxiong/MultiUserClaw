@@ -37,7 +37,10 @@ async def chat_completions(
     container_token = authorization[7:]
 
     raw_body = await request.body()
-    raw_json = _json.loads(raw_body)
+    try:
+        raw_json = _json.loads(raw_body)
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     model = raw_json.get("model", "")
     stream = raw_json.get("stream", False)

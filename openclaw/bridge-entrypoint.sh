@@ -1,39 +1,28 @@
 #!/bin/bash
 set -e
 
-OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
+HOME="${HOME:-/root}"
+export HOME
 
-# Create necessary directories
-mkdir -p "$OPENCLAW_HOME/workspace"
-mkdir -p "$OPENCLAW_HOME/uploads"
-mkdir -p "$OPENCLAW_HOME/sessions"
-mkdir -p "$OPENCLAW_HOME/skills"
-mkdir -p "$OPENCLAW_HOME/extensions"
-mkdir -p "$OPENCLAW_HOME/agents"
+OPENCLAW_HOME="${OPENCLAW_HOME:-/root/.openclaw}"
+export OPENCLAW_HOME
+OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$OPENCLAW_HOME}"
+export OPENCLAW_STATE_DIR
+OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_HOME/openclaw.json}"
+export OPENCLAW_CONFIG_PATH
 
-# Clean stale Chromium profile lock files left by previous container/host runs.
-# Without this, OpenClaw managed browser may fail with "profile appears to be in use".
-if [ -d "$OPENCLAW_HOME/browser" ]; then
-  find "$OPENCLAW_HOME/browser" -type d -path "*/user-data" | while read profile_dir; do
-    removed=0
-    for lock_name in SingletonLock SingletonCookie SingletonSocket; do
-      lock_path="$profile_dir/$lock_name"
-      if [ -e "$lock_path" ] || [ -L "$lock_path" ]; then
-        rm -f "$lock_path"
-        removed=1
-      fi
-    done
-    if [ "$removed" -eq 1 ]; then
-      echo "[entrypoint] Cleared stale Chromium lock(s): $profile_dir"
-    fi
-  done
-fi
+# 快速创建必需目录（并行执行以提高速度）
+mkdir -p "$OPENCLAW_HOME"/{workspace,uploads,sessions,skills,extensions,agents,memory/{weekly,archive}}
 
-#如果不存在默认openclaw.json文件，初始化1个空的
+# 快速清理 Chromium 锁文件（优化：使用 -delete 标志）
+find "$OPENCLAW_HOME/browser" -type f \( -name "SingletonLock" -o -name "SingletonCookie" -o -name "SingletonSocket" \) -delete 2>/dev/null || true
+
+# 如果不存在默认 openclaw.json 文件，初始化一个空的
 if [ ! -f "$OPENCLAW_HOME/openclaw.json" ]; then
   echo "{}" > "$OPENCLAW_HOME/openclaw.json"
   echo "[entrypoint] Initialized $OPENCLAW_HOME/openclaw.json"
 fi
+
 # 同步需要预先拷贝的配置，skills和agents到容器
 if [ -d /deploy-copy ]; then
   echo "[entrypoint] Syncing deploy templates..."
@@ -79,54 +68,6 @@ if [ -d /deploy-copy ]; then
       echo "[entrypoint]   Agent discovered: $agent_name → workspace-$agent_id/"
     done
 
-    # 3. Register agents in openclaw.json
-    if [ -f "$OPENCLAW_HOME/openclaw.json" ] && command -v node &> /dev/null; then
-      node -e "
-        const fs = require('fs');
-        const path = require('path');
-        const agentsDir = '/deploy-copy/Agents';
-        const configPath = '$OPENCLAW_HOME/openclaw.json';
-        const openclawHome = '$OPENCLAW_HOME';
-
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        if (!config.agents) config.agents = {};
-        if (!config.agents.list) config.agents.list = [];
-
-        const existingIds = new Set(config.agents.list.map(e => (e.id || '').toLowerCase()));
-        let changed = false;
-
-        for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          const agentId = entry.name.toLowerCase();
-          if (existingIds.has(agentId)) continue;
-
-          config.agents.list.push({
-            id: agentId,
-            name: entry.name,
-            workspace: path.join(openclawHome, 'workspace-' + agentId),
-          });
-          console.log('[entrypoint]   Registered agent: ' + entry.name);
-          changed = true;
-        }
-
-        // Ensure default 'main' agent is always registered
-        if (!existingIds.has('main')) {
-          const mainWorkspace = path.join(openclawHome, 'workspace');
-          config.agents.list.unshift({
-            id: 'main',
-            name: 'main',
-            workspace: mainWorkspace,
-            default: true,
-          });
-          console.log('[entrypoint]   Registered default agent: main');
-          changed = true;
-        }
-
-        if (changed) {
-          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        }
-      "
-    fi
   fi
 
   # Sync extensions (openclaw plugins)
@@ -218,8 +159,102 @@ if [ -d /deploy-copy ]; then
           fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
           console.log('[entrypoint]   Deep merged openclaw_defaults.json');
         }
+
+        // Force-override critical settings that must always match defaults
+        const forceOverrides = [
+          ['tools.sessions.visibility', defaults.tools?.sessions?.visibility],
+          ['memory.qmd.searchMode', defaults.memory?.qmd?.searchMode],
+          ['agents.defaults.timeoutSeconds', defaults.agents?.defaults?.timeoutSeconds],
+        ];
+        let forceChanged = false;
+        for (const [dotPath, value] of forceOverrides) {
+          if (value === undefined) continue;
+          const keys = dotPath.split('.');
+          let obj = config;
+          for (let i = 0; i < keys.length - 1; i++) {
+            if (!obj[keys[i]] || typeof obj[keys[i]] !== 'object') obj[keys[i]] = {};
+            obj = obj[keys[i]];
+          }
+          const lastKey = keys[keys.length - 1];
+          if (obj[lastKey] !== value) {
+            obj[lastKey] = value;
+            forceChanged = true;
+            console.log('[entrypoint]   Force override: ' + dotPath + ' = ' + JSON.stringify(value));
+          }
+        }
+        if (forceChanged) {
+          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        }
       "
     fi
+  fi
+
+  # Ensure all default agents exist in openclaw.json, deduplicate, fix workspace paths
+  if [ -f "$OPENCLAW_HOME/openclaw.json" ] && command -v node &> /dev/null; then
+    node -e "
+      const fs = require('fs');
+      const configPath = '$OPENCLAW_HOME/openclaw.json';
+      const openclawHome = '$OPENCLAW_HOME';
+      const defaultsPath = '/deploy-copy/openclaw_defaults.json';
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      if (!config.agents) config.agents = {};
+      if (!Array.isArray(config.agents.list)) config.agents.list = [];
+
+      // Load default agents from deploy defaults
+      let defaultAgents = [];
+      try {
+        const defaults = JSON.parse(fs.readFileSync(defaultsPath, 'utf-8'));
+        defaultAgents = defaults.agents?.list || [];
+      } catch (e) {
+        console.log('[entrypoint]   WARN: could not read defaults:', e.message);
+      }
+
+      // Ensure all default agents exist in config (add missing ones)
+      const existingIds = new Set(config.agents.list.map(a => a?.id?.toLowerCase()).filter(Boolean));
+      for (const da of defaultAgents) {
+        if (da?.id && !existingIds.has(da.id.toLowerCase())) {
+          config.agents.list.push(JSON.parse(JSON.stringify(da)));
+          console.log('[entrypoint]   + Added missing agent: ' + da.id);
+        }
+      }
+
+      // Deduplicate by id — keep last occurrence
+      const seen = new Map();
+      for (let i = 0; i < config.agents.list.length; i++) {
+        const a = config.agents.list[i];
+        if (a && a.id) seen.set(a.id.toLowerCase(), i);
+      }
+      const deduped = [];
+      for (const idx of seen.values()) {
+        deduped.push(config.agents.list[idx]);
+      }
+
+      // Fix workspace paths for all agents
+      for (const a of deduped) {
+        if (a.id === 'main') {
+          a.workspace = openclawHome + '/workspace';
+          a.default = true;
+        } else {
+          // Remove relative workspace paths (e.g. 'Agents/manager') — let gateway
+          // resolve to the correct default: \$OPENCLAW_STATE_DIR/workspace-<id>
+          if (a.workspace && !a.workspace.startsWith('/')) {
+            delete a.workspace;
+          }
+        }
+      }
+
+      // Sort: main first, then alphabetical
+      deduped.sort((a, b) => {
+        if (a.id === 'main') return -1;
+        if (b.id === 'main') return 1;
+        return a.id.localeCompare(b.id);
+      });
+
+      config.agents.list = deduped;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log('[entrypoint]   Agents: ' + deduped.map(a => a.id).join(', '));
+    "
   fi
 
   # Sync SSH keys
@@ -240,11 +275,6 @@ if [ -d /deploy-copy ]; then
     done
     echo "[entrypoint] SSH keys synced"
   fi
-
-  # Create global memory directories (shared by all agents)
-  mkdir -p "$OPENCLAW_HOME/memory/weekly"
-  mkdir -p "$OPENCLAW_HOME/memory/archive"
-  echo "[entrypoint] Memory directories ensured"
 
   # Sync qmd-runner.sh wrapper script
   if [ -f /deploy-copy/qmd-runner.sh ]; then
@@ -272,11 +302,10 @@ MEMEOF
     echo "[entrypoint] MEMORY.md template created"
   fi
 
-  # Initialize qmd memory collection (idempotent — skips if already exists)
+  # Initialize qmd memory collection (BM25 search mode, no embedding needed)
   if command -v qmd >/dev/null 2>&1; then
-    export HOME="$OPENCLAW_HOME"
     qmd collection add "$OPENCLAW_HOME/memory" 2>/dev/null || true
-    qmd embed 2>/dev/null || true
+    qmd update 2>/dev/null || true
     echo "[entrypoint] qmd memory collection initialized"
   else
     echo "[entrypoint] WARN: qmd not found, memory search unavailable"
@@ -292,76 +321,59 @@ if [ -n "$NANOBOT_PROXY__URL" ]; then
   echo "[entrypoint] Model: $NANOBOT_AGENTS__DEFAULTS__MODEL"
 fi
 
-# Register memory cron jobs (idempotent — openclaw cron add is safe to re-run)
-# These run in background after the main process starts
+# Register memory cron jobs in background after gateway starts.
 _register_memory_crons() {
   # Wait for gateway to be ready
-  sleep 15
+  for i in $(seq 1 12); do
+    sleep 10
+    if openclaw cron list >/dev/null 2>&1; then
+      break
+    fi
+    if [ "$i" -eq 12 ]; then
+      echo "[entrypoint] WARN: gateway not ready after 120s, skipping cron registration"
+      return
+    fi
+  done
 
-  # Check if cron jobs already exist
+  # 幂等：检查是否已经注册过
+  if [ -f "$OPENCLAW_HOME/.crons-registered" ]; then
+    echo "[entrypoint] crons already registered, skipping"
+    return
+  fi
+
   existing_crons=$(openclaw cron list 2>/dev/null || echo "")
 
   if ! echo "$existing_crons" | grep -q "memory-sync"; then
-    openclaw cron add \
+    timeout 30 openclaw cron add \
       --name "memory-sync" \
       --cron "0 10,14,18,22 * * *" \
       --tz "Asia/Shanghai" \
       --session isolated \
       --wake now \
-      --delivery none \
-      --message "MEMORY SYNC — You are the memory capture agent. Run silently, no notifications.
-
-1. Use sessions_list to get sessions with activity in the last 4 hours
-2. Skip isolated sessions
-3. For each session, use sessions_history to read conversation content
-4. Skip sessions with user_message_count < 2
-5. If no valid sessions remain, do nothing — reply ANNOUNCE_SKIP and stop here.
-6. Read today's /root/.openclaw/memory/YYYY-MM-DD.md (create if it doesn't exist)
-7. Idempotency check: if a session_id's first 8 characters already appear in the file, skip that session
-8. For unrecorded sessions, extract: user's key requests, assistant's conclusions/decisions, important action results. Compress each session to 3-10 summary items.
-9. Append to the daily file in this format: ## HH:MM session:FIRST8 | N messages
-10. Run: /root/.openclaw/qmd-runner.sh update && /root/.openclaw/qmd-runner.sh embed
-11. Reply ANNOUNCE_SKIP when done." 2>/dev/null && \
-    echo "[entrypoint] memory-sync cron registered" || \
-    echo "[entrypoint] WARN: failed to register memory-sync cron"
+      --no-deliver \
+      --message "You are a memory sync agent. Execute these steps NOW using tools. Do NOT just describe them. Step 1: Use the sessions tool to list all sessions from the last 4 hours. Step 2: For each non-isolated session with at least 2 user messages, use the sessions tool to get its history. Step 3: Read the file /root/.openclaw/memory/$(date +%Y-%m-%d).md (create it if it does not exist). Step 4: For each session, check if its first 8 ID chars already appear in the file. If yes skip it. Step 5: Extract 3-10 key items (user requests, decisions, results) from each new session. Step 6: Append to the file under heading: ## HH:MM session:FIRST8CHARS | N messages. Step 7: Run shell command: /root/.openclaw/qmd-runner.sh update. Step 8: If no valid sessions found, do nothing." \
+      2>/dev/null && echo "[entrypoint] memory-sync cron registered" || echo "[entrypoint] WARN: memory-sync cron failed"
   fi
 
   if ! echo "$existing_crons" | grep -q "memory-tidy"; then
-    openclaw cron add \
+    timeout 30 openclaw cron add \
       --name "memory-tidy" \
       --cron "0 3 * * *" \
       --tz "Asia/Shanghai" \
       --session isolated \
       --wake now \
-      --deliver \
-      --message "MEMORY TIDY — You are the memory maintenance agent. You are explicitly authorized to read and modify MEMORY.md in this isolated session.
-
-[Phase 1: Compress]
-1. List all date-named files (YYYY-MM-DD.md) in /root/.openclaw/memory/
-2. Identify files older than 7 days. If none, skip this phase.
-3. Group by natural week, generate /root/.openclaw/memory/weekly/YYYY-MM-DD.md (named after Monday)
-4. Extract [Decisions] [Discoveries] [Preferences] [Tasks], tag each with (src: YYYY-MM-DD)
-5. Idempotent: if ### YYYY-MM-DD section already exists in weekly file, skip it
-
-[Phase 2: Distill]
-6. Read daily files from the last 7 days + current /root/.openclaw/memory/MEMORY.md
-7. Identify info worth keeping long-term. All four criteria must be met: (a) agent would make a concrete mistake without it (b) applies to many future conversations (c) self-contained and understandable (d) not duplicated in existing MEMORY.md
-8. Reverse check: before writing, ask yourself — what specific error would occur without this? If you can't answer, don't write it.
-9. Backup: mkdir -p /root/.openclaw/memory/archive && cp /root/.openclaw/memory/MEMORY.md /root/.openclaw/memory/archive/MEMORY.md.bak-\$(date +%F)
-10. Update MEMORY.md. Hard limit: 80 lines. If over, compress/merge existing entries first.
-
-[Phase 3: Archive]
-11. Move daily files that have been compressed into weekly summaries to /root/.openclaw/memory/archive/YYYY/
-
-[Wrap-up]
-12. Run: /root/.openclaw/qmd-runner.sh update && /root/.openclaw/qmd-runner.sh embed
-13. If changes were made, send a brief summary. If no changes: reply memory-tidy done, no changes." 2>/dev/null && \
-    echo "[entrypoint] memory-tidy cron registered" || \
-    echo "[entrypoint] WARN: failed to register memory-tidy cron"
+      --no-deliver \
+      --message "You are a memory tidy agent. Execute these steps NOW using tools. Phase 1 - Weekly compression: Use shell to list /root/.openclaw/memory/*.md files older than 7 days. Group them by ISO week. For each week, read all daily files, extract key Decisions/Discoveries/Preferences/Tasks, and write a summary to /root/.openclaw/memory/weekly/YYYY-Www.md. Skip weeks that already have a weekly file. Phase 2 - Long-term distillation: Read the last 7 daily files and /root/.openclaw/memory/MEMORY.md. Identify facts that meet ALL criteria: agent would make errors without it, applies broadly, self-contained, not already in MEMORY.md. Back up MEMORY.md first, then append new entries. Hard limit 80 lines in MEMORY.md. Phase 3 - Archive: Move compressed daily files older than 14 days to /root/.openclaw/memory/archive/YYYY/. Finally run: /root/.openclaw/qmd-runner.sh update" \
+      2>/dev/null && echo "[entrypoint] memory-tidy cron registered" || echo "[entrypoint] WARN: memory-tidy cron failed"
   fi
+
+  # 标记 cron 已注册
+  touch "$OPENCLAW_HOME/.crons-registered"
 }
 
-# Register crons in background (don't block main process startup)
+# 异步执行，不阻塞主进程启动
 _register_memory_crons &
+
+echo "[entrypoint] Main startup sequence complete, background tasks running in parallel"
 
 exec "$@"

@@ -1,4 +1,4 @@
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, writeOpenclawConfig } from "./config.js";
@@ -7,17 +7,20 @@ import { createServer } from "./server.js";
 
 async function waitForGateway(url: string, maxWaitMs = 60_000): Promise<void> {
   const start = Date.now();
+  const checkInterval = 200; // 更频繁的检查，减少等待时间
+  const checkTimeout = 1000; // 每次检查的超时时间
+  
   while (Date.now() - start < maxWaitMs) {
     try {
       const client = new BridgeGatewayClient(url);
       await Promise.race([
         client.start(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), checkTimeout)),
       ]);
       client.stop();
       return;
     } catch {
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, checkInterval));
     }
   }
   throw new Error(`Gateway did not become ready within ${maxWaitMs}ms`);
@@ -164,17 +167,12 @@ async function main(): Promise<void> {
   // Resolve openclaw project directory (bridge/ is inside openclaw/)
   const openclawDir = process.env.OPENCLAW_DIR || path.resolve(process.cwd());
 
-  // Ensure openclaw node_modules exist
+  // Ensure openclaw node_modules exist (should exist in Docker image)
   const nodeModulesDir = path.join(openclawDir, "node_modules");
   if (!fs.existsSync(nodeModulesDir)) {
-    console.log("[bridge] Installing openclaw dependencies (pnpm install)...");
-    try {
-      execSync("pnpm install", { cwd: openclawDir, stdio: "inherit" });
-    } catch (err) {
-      console.error("[bridge] Failed to install openclaw dependencies:", (err as Error).message);
-      console.error("[bridge] Please run 'pnpm install' in the openclaw directory manually.");
-      process.exit(1);
-    }
+    console.error("[bridge] CRITICAL: node_modules not found! Docker image may be corrupted.");
+    console.error("[bridge] Please rebuild the Docker image using: python deploy_docker.py --rebuild openclaw");
+    process.exit(1);
   }
 
   // Start openclaw gateway as a child process

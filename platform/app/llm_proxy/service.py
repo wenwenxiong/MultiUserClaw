@@ -12,6 +12,7 @@ response_format, etc.) are forwarded as-is to litellm/provider.
 
 from __future__ import annotations
 
+import time
 import logging
 from datetime import datetime, timedelta
 
@@ -349,7 +350,26 @@ async def proxy_chat_completion(
                         total_output = chunk_usage.get("completion_tokens") or 0
                     yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
-            except Exception:
+            except Exception as e:
+                logger.error(
+                    "Streaming LLM response interrupted: model=%s, litellm=%s, error=%s",
+                    model, litellm_model, e, exc_info=True,
+                )
+                err_text = f"LLM provider stream error: {str(e)}"
+                if len(err_text) > 300:
+                    err_text = err_text[:300] + "..."
+                error_chunk = {
+                    "id": f"platform-error-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": f"\n\n[Error] {err_text}"},
+                        "finish_reason": "stop",
+                    }],
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n"
                 yield "data: [DONE]\n\n"
             finally:
                 total = total_input + total_output
