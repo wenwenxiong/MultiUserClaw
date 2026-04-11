@@ -4,13 +4,13 @@
 
 **在线体验地址**：https://ai.infox-med.com:13080/ （直接注册即可使用）
 
-**当前 OpenClaw 版本**：🦞 OpenClaw 2026.4.3
+**当前 OpenClaw 版本**：🦞 OpenClaw 2026.4.10
 
 ---
 
 ## 📌 版本分支说明
 
-- **main 分支**：当前主分支，基于 OpenClaw 2026.4.3
+- **main 分支**：当前主分支，基于 OpenClaw 2026.4.10
 - **simple_web 分支**：简单的单用户 Web 界面，适合单用户测试
 - **nanobot014 分支**：nanobot 的 0.1.4 版本
 - **nanobot014v3 分支**：nanobot 的 0.1.4 post v3 版本

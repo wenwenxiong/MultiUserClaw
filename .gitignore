@@ -51,7 +51,6 @@ node_modules/
 npm-debug.log
 yarn-error.log
 **/Pods/
-vendor/
 .env*
 cache
 .env_dev
@@ -63,3 +62,4 @@ docs
 openclaw/bridge-deploy-copy
 openclaw/dist-runtime
 simple_front/dist
+openclaw/packages/libsignal-node/

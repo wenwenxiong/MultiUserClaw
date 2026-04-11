@@ -18,6 +18,7 @@ from app.auth.service import (
     hash_password,
     verify_password,
 )
+from app.audit import write_audit_log
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
 from app.db.models import User
@@ -94,7 +95,22 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail = "账号已被禁用"
         elif failure_reason == AuthFailureReason.PASSWORD_INCORRECT:
             detail = "密码错误"
+        await write_audit_log(
+            db,
+            action="login_failed",
+            resource=req.username,
+            detail={"reason": failure_reason or "unknown"},
+            commit=True,
+        )
         raise HTTPException(status_code=401, detail=detail)
+    await write_audit_log(
+        db,
+        action="login",
+        user_id=user.id,
+        resource=user.username,
+        detail={"role": user.role},
+        commit=True,
+    )
     return TokenResponse(
         access_token=create_access_token(user.id, user.role),
         refresh_token=create_refresh_token(user.id),

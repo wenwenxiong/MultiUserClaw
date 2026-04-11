@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import cast, Date, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.audit import write_audit_log
 from app.auth.dependencies import require_admin
 from app.auth.service import hash_password
 from app.container.manager import destroy_container, pause_container, resume_container
@@ -139,7 +140,9 @@ async def list_users(
         safe = search.replace("%", r"\%").replace("_", r"\_")
         pattern = f"%{safe}%"
         query = query.where(
-            (User.username.ilike(pattern)) | (User.email.ilike(pattern))
+            (User.username.ilike(pattern))
+            | (User.email.ilike(pattern))
+            | (Container.docker_id.ilike(pattern))
         )
 
     # Total count (before pagination)
@@ -171,7 +174,12 @@ async def list_users(
 
 
 @router.put("/users/{user_id}")
-async def update_user(user_id: str, req: UpdateUserRequest, db: AsyncSession = Depends(get_db)):
+async def update_user(
+    user_id: str,
+    req: UpdateUserRequest,
+    db: AsyncSession = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -179,12 +187,24 @@ async def update_user(user_id: str, req: UpdateUserRequest, db: AsyncSession = D
     values = {k: v for k, v in req.model_dump().items() if v is not None}
     if values:
         await db.execute(update(User).where(User.id == user_id).values(**values))
+        await write_audit_log(
+            db,
+            action="user_update",
+            user_id=admin_user.id,
+            resource=user_id,
+            detail={"fields": values},
+        )
         await db.commit()
     return {"ok": True}
 
 
 @router.put("/users/{user_id}/password")
-async def reset_user_password(user_id: str, req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def reset_user_password(
+    user_id: str,
+    req: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
     if len(req.new_password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
@@ -193,19 +213,41 @@ async def reset_user_password(user_id: str, req: ResetPasswordRequest, db: Async
     await db.execute(
         update(User).where(User.id == user_id).values(password_hash=hash_password(req.new_password))
     )
+    await write_audit_log(
+        db,
+        action="password_reset",
+        user_id=admin_user.id,
+        resource=user_id,
+        detail={"by_admin": admin_user.username},
+    )
     await db.commit()
     return {"message": "Password updated"}
 
 
 @router.delete("/users/{user_id}/container")
-async def delete_user_container(user_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_user_container(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
     if await destroy_container(db, user_id):
+        await write_audit_log(
+            db,
+            action="container_destroy",
+            user_id=admin_user.id,
+            resource=user_id,
+            detail={"by_admin": admin_user.username},
+        )
+        await db.commit()
         return {"ok": True}
     raise HTTPException(status_code=404, detail="Container not found")
 
 
 @router.post("/containers/sync")
-async def sync_all_container_statuses(db: AsyncSession = Depends(get_db)):
+async def sync_all_container_statuses(
+    db: AsyncSession = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
     """Sync all container statuses from Docker to database.
     
     Returns the count of updated containers.
@@ -225,13 +267,24 @@ async def sync_all_container_statuses(db: AsyncSession = Depends(get_db)):
             if real_status != container.status:
                 updated_count += 1
     
+    await write_audit_log(
+        db,
+        action="container_sync_all",
+        user_id=admin_user.id,
+        resource="all",
+        detail={"updated": updated_count},
+    )
     await db.commit()
     
     return {"updated": updated_count, "message": f"Synced {updated_count} containers"}
 
 
 @router.post("/users/{user_id}/container/sync")
-async def sync_single_container_status(user_id: str, db: AsyncSession = Depends(get_db)):
+async def sync_single_container_status(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
     """Sync a single user's container status from Docker to database."""
     result = await db.execute(
         select(Container).where(Container.user_id == user_id)
@@ -245,21 +298,52 @@ async def sync_single_container_status(user_id: str, db: AsyncSession = Depends(
         raise HTTPException(status_code=400, detail="No docker_id for this container")
     
     real_status = await _sync_container_status(db, container.docker_id, container.status)
+    await write_audit_log(
+        db,
+        action="container_sync",
+        user_id=admin_user.id,
+        resource=user_id,
+        detail={"status": real_status, "docker_id": container.docker_id},
+    )
     await db.commit()
     
     return {"status": real_status, "docker_id": container.docker_id}
 
 
 @router.post("/users/{user_id}/container/pause")
-async def pause_user_container(user_id: str, db: AsyncSession = Depends(get_db)):
+async def pause_user_container(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
     if await pause_container(db, user_id):
+        await write_audit_log(
+            db,
+            action="container_pause",
+            user_id=admin_user.id,
+            resource=user_id,
+            detail={"by_admin": admin_user.username},
+        )
+        await db.commit()
         return {"ok": True}
     raise HTTPException(status_code=404, detail="Container not running")
 
 
 @router.post("/users/{user_id}/container/resume")
-async def resume_user_container(user_id: str, db: AsyncSession = Depends(get_db)):
+async def resume_user_container(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
     if await resume_container(db, user_id):
+        await write_audit_log(
+            db,
+            action="container_resume",
+            user_id=admin_user.id,
+            resource=user_id,
+            detail={"by_admin": admin_user.username},
+        )
+        await db.commit()
         return {"ok": True}
     raise HTTPException(status_code=404, detail="Container not found or cannot be resumed")
 

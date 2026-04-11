@@ -206,8 +206,26 @@ def start_postgres() -> bool:
         ], check=True)
 
     if wait_for_port(5432, timeout=15, name="PostgreSQL"):
-        success("PostgreSQL 就绪 (端口 5432)")
-        return True
+        # 端口已就绪，再验证数据库连接
+        for attempt in range(1, 11):
+            try:
+                result = subprocess.run(
+                    ["docker", "exec", "openclaw-local-postgres", "psql", "-U", "nanobot", "-d", "postgres", "-c", "SELECT 1"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    success("PostgreSQL 就绪 (端口 5432)")
+                    return True
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception:
+                pass
+            sys.stdout.write(f"\r  验证数据库连接... ({attempt}/10s)")
+            sys.stdout.flush()
+            time.sleep(1)
+        print()
+        error("PostgreSQL 连接验证失败")
+        return False
     else:
         error("PostgreSQL 启动超时")
         return False

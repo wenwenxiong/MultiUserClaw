@@ -28,6 +28,10 @@
   python deploy_docker.py --rebuild gateway
   python deploy_docker.py --rebuild frontend
 
+  # 使用缓存快速重建（不使用 --no-cache）
+  python deploy_docker.py --rebuild gateway --fast
+  python deploy_docker.py --rebuild openclaw,gateway --fast
+
   # 完全清理重建
   python deploy_docker.py --clean
 """
@@ -191,6 +195,13 @@ def build_openclaw_image():
     success("openclaw:latest 构建完成")
 
 
+def build_openclaw_image_fast():
+    """使用缓存构建 openclaw 基础镜像（用户容器使用）。"""
+    log("构建 openclaw:latest 基础镜像（使用缓存）...")
+    run("docker build -f openclaw/Dockerfile.bridge -t openclaw:latest openclaw/")
+    success("openclaw:latest 构建完成")
+
+
 def _build_task(name: str, cmd: str):
     """在子线程中执行构建命令，返回 (name, returncode, elapsed)。"""
     log(f"[并行] 开始构建: {name}")
@@ -218,7 +229,7 @@ def build_and_start(compose_file: str, host: str, gateway_port: int, frontend_po
     success("所有服务已启动")
 
 
-def rebuild_service(compose_file: str, service: str, host: str | None = None, gateway_port: int | None = None):
+def rebuild_service(compose_file: str, service: str, host: str | None = None, gateway_port: int | None = None, use_cache: bool = False):
     """重建并重启指定服务。"""
     if host and gateway_port:
         api_url = f"http://{host}:{gateway_port}"
@@ -226,7 +237,8 @@ def rebuild_service(compose_file: str, service: str, host: str | None = None, ga
         log(f"VITE_API_URL = {api_url}")
     compose_args = f"-f {compose_file}"
     log(f"重建服务: {service}...")
-    run(f"docker compose {compose_args} build --no-cache {service}")
+    cache_flag = "" if use_cache else "--no-cache"
+    run(f"docker compose {compose_args} build {cache_flag} {service}")
     run(f"docker compose {compose_args} up -d {service}")
     success(f"服务 {service} 已重建并启动")
 
@@ -357,6 +369,7 @@ def main():
     parser.add_argument("--skip-base", action="store_true", help="跳过构建 openclaw 基础镜像")
     parser.add_argument("--skip-health", action="store_true", help="跳过健康检查")
     parser.add_argument("--status", action="store_true", help="仅显示当前状态")
+    parser.add_argument("--fast", action="store_true", help="使用 Docker 缓存加快构建速度（不使用 --no-cache）")
     args = parser.parse_args()
 
     # 推断 gateway 端口
@@ -397,7 +410,10 @@ def main():
 
         # "openclaw" 表示重建基础镜像 + 清理旧用户容器
         if "openclaw" in services:
-            build_openclaw_image()
+            if args.fast:
+                build_openclaw_image_fast()
+            else:
+                build_openclaw_image()
             services.remove("openclaw")
 
             # 清理旧用户容器（它们用的是旧镜像）
@@ -427,7 +443,8 @@ def main():
             compose_args = f"-f {args.compose}"
             services_str = " ".join(services)
             log(f"重建服务: {services_str}...")
-            run(f"docker compose {compose_args} build --parallel --no-cache {services_str}")
+            cache_flag = "" if args.fast else "--no-cache"
+            run(f"docker compose {compose_args} build --parallel {cache_flag} {services_str}")
             run(f"docker compose {compose_args} up -d {services_str}")
             success(f"服务 {services_str} 已重建并启动")
 

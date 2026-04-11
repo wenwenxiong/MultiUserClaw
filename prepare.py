@@ -251,6 +251,55 @@ def check_uv(fix: bool) -> CheckResult:
     return CheckResult(False, "安装 uv 失败，请手动安装: https://docs.astral.sh/uv/getting-started/installation/")
 
 
+def check_postgres_database(fix: bool) -> CheckResult:
+    """检查 PostgreSQL 数据库和角色是否存在。
+
+    检查:
+    1. openclaw-local-postgres 容器是否运行
+    2. nanobot 角色是否存在
+    3. nanobot_platform 数据库是否存在
+    """
+    # 1. 检查容器是否运行
+    r = run("docker", "ps", "-q", "--filter", "name=openclaw-local-postgres")
+    if r.returncode != 0 or not r.stdout.strip():
+        if not fix:
+            return CheckResult(False, "openclaw-local-postgres 容器未运行，请先启动: python start_local.py --only db")
+        return CheckResult(False, "openclaw-local-postgres 容器未运行，需要手动启动")
+
+    # 2. 检查角色
+    r = run("docker", "exec", "openclaw-local-postgres", "psql", "-U", "nanobot", "-d", "postgres", "-c", "\du")
+    if r.returncode != 0:
+        return CheckResult(False, "无法连接到 PostgreSQL 容器检查角色")
+
+    if "nanobot" not in r.stdout:
+        if fix:
+            # 尝试创建角色
+            info("创建 nanobot 角色...")
+            r2 = run("docker", "exec", "openclaw-local-postgres", "psql", "-U", "postgres", "-c",
+                    "CREATE USER nanobot WITH SUPERUSER CREATEDB CREATEROLE REPLICATION ENCRYPTED PASSWORD 'nanobot'",
+                    capture=False)
+            if r2.returncode == 0:
+                return CheckResult(True, "nanobot 角色已创建", fixed=True)
+        return CheckResult(False, "nanobot 角色不存在")
+
+    # 3. 检查数据库
+    r = run("docker", "exec", "openclaw-local-postgres", "psql", "-U", "nanobot", "-d", "postgres", "-c", "\l")
+    if r.returncode != 0:
+        return CheckResult(False, "无法连接到 PostgreSQL 容器检查数据库")
+
+    if "nanobot_platform" not in r.stdout:
+        if fix:
+            # 尝试创建数据库
+            info("创建 nanobot_platform 数据库...")
+            r2 = run("docker", "exec", "openclaw-local-postgres", "psql", "-U", "nanobot", "-d", "postgres", "-c",
+                    "CREATE DATABASE nanobot_platform", capture=False)
+            if r2.returncode == 0:
+                return CheckResult(True, "nanobot_platform 数据库已创建", fixed=True)
+        return CheckResult(False, "nanobot_platform 数据库不存在")
+
+    return CheckResult(True, "PostgreSQL 数据库和角色就绪")
+
+
 def _uv_cmd() -> list[str]:
     """返回可用的 uv 命令前缀（全局 uv 或 python -m uv）。"""
     if shutil.which("uv"):
@@ -553,6 +602,19 @@ def main():
         ok(r.detail + (" (已安装)" if r.fixed else ""))
     else:
         fail(r.detail)
+
+    # 5.5. PostgreSQL 数据库
+    step("5.5. PostgreSQL 数据库")
+    if not docker_ok:
+        results["PostgreSQL 数据库"] = CheckResult(False, "跳过（Docker 未运行）")
+        warn("跳过（Docker 未运行）")
+    else:
+        r = check_postgres_database(fix=fix)
+        results["PostgreSQL 数据库"] = r
+        if r.passed:
+            ok(r.detail + (" (已修复)" if r.fixed else ""))
+        else:
+            fail(r.detail)
 
     # 6. Platform 依赖
     step("6. Platform Gateway Python 依赖")

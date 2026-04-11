@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -18,16 +19,17 @@ export default function ContainersPage() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
   const [confirmAction, setConfirmAction] = useState<{ user: UserSummary; type: "pause" | "resume" | "destroy" } | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await getUsers(page, 20));
+      setData(await getUsers(page, 20, search));
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, search]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -86,6 +88,15 @@ export default function ContainersPage() {
         >
           {syncing ? "同步中..." : "刷新状态"}
         </Button>
+      </div>
+
+      <div className="mb-4">
+        <Input
+          placeholder="搜索用户名、邮箱或 Docker ID..."
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          className="max-w-sm"
+        />
       </div>
 
       {loading ? (
