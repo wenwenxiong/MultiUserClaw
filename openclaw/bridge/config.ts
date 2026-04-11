@@ -39,7 +39,7 @@ export function loadConfig(): BridgeConfig {
   const workspacePath = process.env.OPENCLAW_WORKSPACE || path.join(openclawHome, "workspace");
   const uploadsPath = path.join(openclawHome, "uploads");
   const sessionsPath = path.join(openclawHome, "sessions");
-  const skillsMarketplaceRepo = process.env.NANOBOT_SKILLS_MARKETPLACE_REPO;
+  const skillsMarketplaceRepo = process.env.NANOBOT_SKILLS_MARKETPLACE_REPO || "https://github.com/johnson7788/collect_skills.git";
 
   return {
     proxyUrl,
