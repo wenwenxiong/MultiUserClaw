@@ -506,7 +506,8 @@ export default function Chat() {
       const uploadedPaths: string[] = []
       for (const pf of pendingFiles) {
         const result = await uploadFileToWorkspace(pf.file, uploadDir)
-        uploadedPaths.push(result.path)
+        const uploadedPath = result.path || result.name || pf.name
+        uploadedPaths.push(uploadedPath)
       }
 
       // Build final message with file references

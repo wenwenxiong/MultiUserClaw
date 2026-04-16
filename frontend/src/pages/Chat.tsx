@@ -421,6 +421,7 @@ export default function Chat() {
 
       // Wait for response completion by runId; SSE still handles incremental text.
       await waitForResponse(activeSessionKey, sendResult.runId)
+
       fetchSessions()
     } catch (err: any) {
       if (activeSessionKey) clearPendingSession(activeSessionKey)
@@ -474,6 +475,15 @@ export default function Chat() {
 
     // Final / error / aborted — load final messages, THEN clear streaming
     if (state === 'final' || state === 'error' || state === 'aborted') {
+      // Show error info to user when agent execution fails
+      if (state === 'error') {
+        const errDetail = payload.error || payload.message?.error || payload.detail
+        const errMsg = typeof errDetail === 'string'
+          ? errDetail
+          : errDetail?.message || ''
+        setError(`Agent 执行出错: ${errMsg || '请检查当前模型是否可用'}`)
+      }
+
       // Don't clear streamingText yet — keep it visible until messages load
 
       // Debounce: reset the completion timer on every "final"
@@ -597,7 +607,7 @@ export default function Chat() {
     // SSE handles incremental display. Completion should come from runId-based
     // waiting so we don't mistake a partial assistant message for a finished turn.
     sseCompletedRef.current = false
-    const maxWaitMs = 240000 // 4 minutes max
+    const maxWaitMs = 600000 // 10 minutes max
     const perRequestTimeoutMs = 25000
     const startTime = Date.now()
 
@@ -615,6 +625,13 @@ export default function Chat() {
 
           if (waitResult.status === 'timeout') {
             continue
+          }
+
+          if (waitResult.status === 'error') {
+            const errMsg = typeof waitResult.error === 'string'
+              ? waitResult.error
+              : (waitResult.error as any)?.message || ''
+            setError(`模型响应失败: ${errMsg || '请检查当前模型配置是否正确'}`)
           }
 
           const detail = await getSession(key)
@@ -907,7 +924,13 @@ export default function Chat() {
                 </div>
               ) : (
                 <div className="space-y-4 max-w-3xl mx-auto">
-                  {messages.map((msg, i) => (
+                  {messages.filter(msg => {
+                    if (msg.role !== 'user' && msg.role !== 'assistant') return false
+                    // Hide internal system notifications injected as user messages
+                    const text = typeof msg.content === 'string' ? msg.content : ''
+                    if (text.includes('System (untrusted):') || text.includes('An async command you ran earlier has completed')) return false
+                    return true
+                  }).map((msg, i) => (
                     <div
                       key={i}
                       className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}

@@ -93,6 +93,8 @@ export default memo(function MarkdownContent({ content, className = '' }: { cont
           td({ children }) { return <td className="px-3 py-1.5 border-b border-dark-border/50">{children}</td> },
           // Links (工作区文件路径自动渲染为下载卡片)
           a: fileDownloadLinkRenderer,
+          // Images: hide inline markdown images (files are shown as download cards below)
+          img() { return null },
           // Horizontal rule
           hr() { return <hr className="my-3 border-dark-border" /> },
           // Strong / Em

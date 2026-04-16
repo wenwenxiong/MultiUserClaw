@@ -61,6 +61,7 @@ class UserResponse(BaseModel):
     email: str
     role: str
     quota_tier: str
+    runtime_mode: str
     is_active: bool
 
 

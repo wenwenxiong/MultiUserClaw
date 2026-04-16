@@ -139,12 +139,20 @@ export function isLoggedIn(): boolean {
 let refreshPromise: Promise<boolean> | null = null
 
 async function parseErrorMessage(res: Response): Promise<string> {
+  const fallback = `请求失败 (${res.status})`
+
   try {
-    const data = await res.json() as { detail?: string; message?: string }
-    return data.detail || data.message || `请求失败 (${res.status})`
-  } catch {
     const body = await res.text()
-    return body || `请求失败 (${res.status})`
+    if (!body) return fallback
+
+    try {
+      const data = JSON.parse(body) as { detail?: string; message?: string }
+      return data.detail || data.message || body || fallback
+    } catch {
+      return body || fallback
+    }
+  } catch {
+    return fallback
   }
 }
 
@@ -342,13 +350,13 @@ export async function listPlugins(): Promise<PluginInfo[]> {
 export async function uploadFileToWorkspace(
   file: File,
   uploadDir: string,
-): Promise<{ path: string }> {
+): Promise<{ name?: string; path?: string; file_id?: string; url?: string }> {
   const token = getAccessToken()
   const formData = new FormData()
   formData.append('file', file)
-  formData.append('upload_dir', uploadDir)
+  formData.append('path', uploadDir)
 
-  const res = await fetch(`${API_URL}/api/openclaw/files/upload`, {
+  const res = await fetch(`${API_URL}/api/openclaw/filemanager/upload`, {
     method: 'POST',
     headers: token ? { 'Authorization': `Bearer ${token}` } : {},
     body: formData,
