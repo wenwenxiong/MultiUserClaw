@@ -1,0 +1,9 @@
+# Ignore K8s deployment files with sensitive data
+k8s-openclaw/03-secret.yaml
+k8s-openclaw/03-secret.yaml.bak
+k8s-openclaw/03-secret.yaml.local
+k8s-openclaw/*.key
+k8s-openclaw/*.pem
+
+# Keep directory structure but ignore secrets
+!k8s-openclaw/.gitkeep

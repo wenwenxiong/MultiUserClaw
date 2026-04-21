@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-config
+  namespace: openclaw-system
+data:
+  PLATFORM_SHARED_OPENCLAW_ENABLED: "true"
+  PLATFORM_SHARED_OPENCLAW_URL: "http://shared-openclaw-service.openclaw-system.svc.cluster.local:18080"
+  PLATFORM_DEFAULT_MODEL: "dashscope/qwen3-coder-plus"
+  PLATFORM_CONTAINER_TZ: "Asia/Shanghai"
+  PLATFORM_CONTAINER_MEMORY_LIMIT: "512m"
+  PLATFORM_CONTAINER_CPU_LIMIT: "1.0"
+  PLATFORM_SHARED_OPENCLAW_TIMEOUT_SECONDS: "600"

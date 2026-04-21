@@ -43,12 +43,24 @@ class Settings(BaseSettings):
 
     # Shared OpenClaw runtime，共享openclaw容器时的参数
     shared_openclaw_enabled: bool = True
-    shared_openclaw_url: str = "http://shared-openclaw:18080"
+    shared_openclaw_url: str = "http://shared-openclaw-service.openclaw-system.svc.cluster.local:18080"
     shared_openclaw_timeout_seconds: int = 120
     shared_openclaw_system_token: str = ""
     user_container_publish_ports: bool = True
     user_container_bind_ip: str = "0.0.0.0"
     container_tz: str = "Asia/Shanghai"
+    
+    # K8s容器管理器配置
+    use_k8s_container_manager: bool = False  # 默认使用Docker manager，设置为True启用K8s manager
+    k8s_namespace: str = "openclaw-system"
+    k8s_dedicated_pod_label_selector: str = "app=platform-gateway"
+    k8s_dedicated_pod_prefix: str = "openclaw-user"
+    k8s_dedicated_pod_image: str = "openclaw-user:latest"
+    k8s_shared_pod_name: str = "shared-openclaw"
+    k8s_pod_memory_request: str = "256Mi"
+    k8s_pod_memory_limit: str = "512Mi"
+    k8s_pod_cpu_request: str = "100m"
+    k8s_pod_cpu_limit: str = "500m"
     # 🟢 提升资源限制（适合浏览器/agent）
     container_memory_limit: str = "2g"  # 原来 512m
     container_cpu_limit: float = 4.0  # 原来 1.0

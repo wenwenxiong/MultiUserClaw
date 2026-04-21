@@ -64,3 +64,10 @@ openclaw/dist-runtime
 simple_front/dist
 openclaw/packages/libsignal-node/
 phone_front/dist
+
+# K8s deployment files (ignore sensitive data)
+k8s-openclaw/03-secret.yaml
+k8s-openclaw/03-secret.yaml.bak
+k8s-openclaw/03-secret.yaml.local
+k8s-openclaw/*.key
+k8s-openclaw/*.pem

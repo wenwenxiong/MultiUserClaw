@@ -19,8 +19,64 @@ from app.db.models import Container, User, UserPortBinding
 
 _client: docker.DockerClient | None = None
 
+# Import K8s container manager (support for K8s deployment)
+try:
+    from app.container.k8s_manager import K8sContainerManager
+    _k8s_manager = None
+except ImportError:
+    _k8s_manager = None
+    logger = None  # Will be initialized later if needed
+
+
+async def _get_user_runtime_mode(db: AsyncSession, user_id: str) -> str:
+    """Get user's runtime mode (dedicated or shared)."""
+    from app.db.models import User
+    
+    result = await db.execute(select(User).where(User.id == user_id))
+    user_row = result.scalar_one_or_none()
+    if user_row is None:
+        return "dedicated"  # Default fallback
+    
+    return user_row.runtime_mode if user_row else "dedicated"
+
+
+async def _get_user_runtime_mode(db: AsyncSession, user_id: str) -> str:
+    """Get user's runtime mode (dedicated or shared)."""
+    from app.db.models import User
+    
+    result = await db.execute(select(User).where(User.id == user_id))
+    user_row = result.scalar_one_or_none()
+    if user_row is None:
+        return "dedicated"  # Default fallback
+    
+    return user_row.runtime_mode if user_row else "dedicated"
+
 
 def _docker() -> docker.DockerClient:
+
+
+def _get_container_manager():
+    """Get appropriate container manager based on runtime environment."""
+    from app.container.k8s_manager import K8sContainerManager
+    from app.config import settings
+    import logging
+    
+    global _k8s_manager
+    logger = logging.getLogger(__name__)
+    
+    if _k8s_manager is None:
+        # Check if K8s manager is requested via environment variable
+        if settings.use_k8s_container_manager:
+            try:
+                _k8s_manager = K8sContainerManager()
+                logger.info("K8s container manager initialized successfully")
+            except Exception as exc:
+                logger.error(f"Failed to initialize K8s container manager: {exc}")
+                _k8s_manager = None
+        else:
+            logger.info("Using Docker container manager (K8s mode not enabled)")
+    
+    return _k8s_manager if _k8s_manager else None
     global _client
     if _client is None:
         _client = docker.from_env()
@@ -210,12 +266,24 @@ async def upsert_user_port_binding(
 
 
 async def create_container(db: AsyncSession, user_id: str) -> Container | None:
-    """Create a Docker container for a user and record metadata in DB.
+    """Create a Docker/K8s container for a user and record metadata in DB.
 
-    Inserts a DB record first to claim the user_id slot (preventing races),
-    then creates the Docker container and updates the record.
-    Returns None if another request already claimed the slot.
+    Supports both Docker and K8s modes based on runtime_mode setting.
     """
+    from app.db.models import User
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Get user to check runtime mode
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user_row = user_result.scalar_one_or_none()
+    if user_row is None:
+        logger.error(f"User {user_id} not found")
+        return None
+    
+    runtime_mode = user_row.runtime_mode
+    logger.info(f"Creating container for user {user_id} with runtime_mode={runtime_mode}")
+    
     container_token = secrets.token_urlsafe(32)
     short_id = user_id[:8]
 
@@ -243,9 +311,62 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
     await db.flush()
     record = await get_container(db, user_id)
 
-    # Now safe to create Docker resources — we hold the DB slot.
-    _ensure_network()
-    client = _docker()
+    # Now safe to create container resources — we hold the DB slot.
+    
+    # Get container manager based on runtime environment
+    manager = _get_container_manager()
+    
+    if isinstance(manager, K8sContainerManager):
+        # K8s mode: Create K8s Pod
+        logger.info(f"Using K8s container manager for user {user_id}")
+        
+        short_id = user_id[:8]
+        pod_name = f"openclaw-user-{short_id}"
+        
+        # Create K8s Pod
+        pod_name = await manager.create_dedicated_pod(db, user_id)
+        
+        # Create DB record with K8s Pod name
+        container_token = secrets.token_urlsafe(32)
+        stmt = (
+            pg_insert(Container)
+            .values(
+                user_id=user_id,
+                docker_id=pod_name,  # Store K8s Pod name
+                container_token=container_token,
+                status="creating",
+                internal_host="k8s-pending",  # K8s Pod pending IP
+                internal_port=18080,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
+            .returning(Container.__table__.c.id)
+        )
+        result = await db.execute(stmt)
+        row = result.first()
+        if row is None:
+            return None
+        
+        await db.flush()
+        logger.info(f"K8s pod {pod_name} created for user {user_id}")
+        
+        # Return container record
+        return Container(
+            id=row.id,
+            user_id=user_id,
+            docker_id=pod_name,
+            container_token=container_token,
+            status="creating",
+            internal_host="k8s-pending",
+            internal_port=18080,
+        )
+        
+    else:
+        # Docker mode: Use existing implementation
+        logger.info(f"Using Docker container manager for user {user_id}")
+        _ensure_network()
+        client = _docker()
+        data_vol = f"openclaw-data-{short_id}"
+        container_name = f"openclaw-user-{short_id}"
 
     data_vol = f"openclaw-data-{short_id}"
     container_name = f"openclaw-user-{short_id}"
@@ -363,32 +484,126 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
 
 
 async def ensure_running(db: AsyncSession, user_id: str) -> Container:
-    """Return a running container for the user, creating or unpausing as needed."""
+    """Return a running container for the user, creating or unpausing as needed.
+    
+    Supports both Docker and K8s modes based on user's runtime_mode setting.
+    """
     import asyncio
-
+    from app.db.models import User
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Get user to check runtime mode
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user_row = user_result.scalar_one_or_none()
+    if user_row is None:
+        logger.error(f"User {user_id} not found")
+        # For shared mode, return early
+        raise RuntimeError(f"User not found")
+    
+    runtime_mode = user_row.runtime_mode
+    logger.info(f"Ensuring running container for user {user_id} with runtime_mode={runtime_mode}")
+    
     record = await get_container(db, user_id)
 
-    if record is None:
+    # For shared mode, container is always running
+    if runtime_mode == "shared":
+        logger.info(f"User {user_id} is in shared mode, container always available")
+        # # If container doesn't exist or is archived, return appropriate record
+        if record is None or record.status == "archived":
+            # Create a minimal placeholder record for shared mode
+            container_token = secrets.token_urlsafe(32)
+            stmt = (
+                pg_insert(Container)
+                .values(
+                    user_id=user_id,
+                    docker_id="shared-openclaw",  # Fixed name for shared pod
+                    container_token=container_token,
+                    status="running",
+                    internal_host="",  # Not applicable for shared
+                    internal_port=18080,
+                )
+                .on_conflict_do_nothing(index_elements=["user_id"])
+                .returning(Container.__table__.c.id)
+            )
+            result = await db.execute(stmt)
+            await db.flush()
+            record = await get_container(db, user_id)
+            if record is None:
+                # Return the newly created record
+            return record
+        else:
+            # For dedicated mode, use full logic
+            return await _ensure_dedicated_container_running(db, user_id, record)
+
+
+async def _ensure_dedicated_container_running(db: AsyncSession, user_id: str, record: Container) -> Container:
+    """Ensure dedicated container is running (Docker mode)."""
+    # This is extracted from the original ensure_running to support K8s mode cleanly.
+    
+    if record.status == "paused":
+        try:
+            c = client.containers.get(record.docker_id)
+            c.unpause()
+            await db.execute(
+                update(Container)
+                .where(Container.id == record.id)
+                .values(status="running")
+            )
+            await db.commit()
+            record.status = "running"
+            return record
+        except DockerNotFound:
+            await db.delete(record)
+            created = await create_container(db, user_id)
+            if created is not None:
+                return created
+            record = await get_container(db, user_id)
+            if record is None:
+                return record
+    
+    elif record.status == "archived":
+        # Recreate from persisted data volumes
+        await db.delete(record)
+        await db.commit()
         created = await create_container(db, user_id)
         if created is not None:
             return created
-        # Race condition: another request created the container first
         record = await get_container(db, user_id)
         if record is None:
-            raise RuntimeError("Failed to create or find container")
-
-    # Another request is still creating the container — wait for it
-    if record.status == "creating":
-        for _ in range(30):  # wait up to 60s
-            await asyncio.sleep(2)
-            await db.expire(record)
-            record = await get_container(db, user_id)
-            if record is None or record.status != "creating":
-                break
-        if record is None:
-            return await create_container(db, user_id)
-        if record.status == "creating":
-            raise RuntimeError("Container creation timed out")
+            return record
+    
+    elif record.status == "running":
+        # Verify it's actually running
+        try:
+            c = client.containers.get(record.docker_id)
+            if c.status != "running":
+                c.start()
+                c.reload()
+            # Sync internal IP — it may change after container restart
+            nets = c.attrs.get("NetworkSettings", {}).get("Networks", {})
+            for net_info in nets.values():
+                current_ip = net_info.get("IPAddress", "")
+                if current_ip and current_ip != record.internal_host:
+                    record.internal_host = current_ip
+                    await db.execute(
+                        update(Container)
+                        .where(Container.id == record.id)
+                        .values(internal_host=current_ip)
+                    )
+                    await db.commit()
+                    break
+        except DockerNotFound:
+            await db.delete(record)
+            created = await create_container(db, user_id)
+            if created is not None:
+                return created
+        record = await get_container(db, user_id)
+            if record is None:
+            return record
+    
+    else:
+        return record
 
     client = _docker()
 
@@ -511,10 +726,26 @@ async def resume_container(db: AsyncSession, user_id: str) -> bool:
 
 async def destroy_container(db: AsyncSession, user_id: str) -> bool:
     """Stop and remove a user's container (data volumes are preserved)."""
+    logger = logging.getLogger(__name__)
+    
     record = await get_container(db, user_id)
     if record is None:
         return False
-
+    
+    # Check user's runtime mode
+    runtime_mode = await _get_user_runtime_mode(db, user_id)
+    if runtime_mode == "shared":
+        logger.info(f"Cannot destroy shared container for user {user_id}")
+        return False
+    
+    # Check if record represents a K8s Pod
+    manager = _get_container_manager()
+    if isinstance(manager, K8sContainerManager):
+        # K8s mode: destroy operation not applicable
+        logger.info(f"Cannot destroy K8s pod {record.docker_id}, K8s pods should be managed via K8s manager")
+        return False
+    
+    # Docker mode: use existing implementation
     client = _docker()
     try:
         c = client.containers.get(record.docker_id)
@@ -522,7 +753,7 @@ async def destroy_container(db: AsyncSession, user_id: str) -> bool:
         c.remove()
     except DockerNotFound:
         pass
-
+    
     await db.delete(record)
     await db.commit()
     return True

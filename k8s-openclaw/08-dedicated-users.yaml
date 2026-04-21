@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openclaw-users
+  namespace: openclaw-system
+spec:
+  serviceName: "openclaw-user-service"
+  replicas: 0
+  selector:
+    matchLabels:
+      app: openclaw-user
+  template:
+    metadata:
+      labels:
+        app: openclaw-user
+    spec:
+      containers:
+      - name: openclaw-user
+        image: openclaw-user:latest
+        command: ["node", "bridge/dist/bridge/start.js"]
+        ports:
+        - containerPort: 18080
+        envFrom:
+        - configMapRef:
+            name: openclaw-config
+        env:
+        - name: NANOBOT_PROXY__URL
+          value: "http://platform-gateway-service.openclaw-system.svc.cluster.local:8080/llm/v1"
+        - name: NANOBOT_AGENTS__DEFAULTS__MODEL
+          valueFrom:
+            configMapKeyRef:
+              name: openclaw-config
+              key: PLATFORM_DEFAULT_MODEL
+        - name: BRIDGE_ENABLE_CHANNELS
+          value: "1"
+        - name: USER_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: user-data
+          mountPath: /root/.openclaw
+      volumes:
+      - name: user-data
+        hostPath:
+          path: /var/lib/openclaw-users
+          type: Directory

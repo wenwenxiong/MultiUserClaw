@@ -1,0 +1,4 @@
+# Keep this directory in git but ignore sensitive files
+# Add k8s-openclaw/ to .gitignore with these patterns:
+# k8s-openclaw/03-secret.yaml
+# k8s-openclaw/03-secret.yaml.bak
