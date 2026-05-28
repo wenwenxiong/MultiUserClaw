@@ -2,7 +2,7 @@
 """OpenClaw Docker 部署脚本。
 
 构建 openclaw 基础镜像并通过 docker compose 启动所有服务
-（postgres + gateway + frontend + shared-openclaw + share-openclaw-front + manage-front + simple-front）。
+（postgres + gateway + frontend + manage-front + simple-front）。
 支持本地部署和远程服务器部署（通过 SSH）。
 
 用法:
@@ -24,14 +24,15 @@
   # 仅重启服务
   python deploy_docker.py --restart
 
-  # 重建指定服务（逗号分隔，openclaw 表示基础镜像）
-  python deploy_docker.py --rebuild openclaw,gateway,frontend,manage-front,simple-front,shared-openclaw,share-openclaw-front
+  # 重建指定服务（逗号分隔，hermes 表示 Hermes 基础镜像）
+  python deploy_docker.py --rebuild hermes,gateway,frontend,manage-front,simple-front
   python deploy_docker.py --rebuild gateway
   python deploy_docker.py --rebuild frontend
+  python deploy_docker.py --rebuild hermes --with-browser
 
   # 使用缓存快速重建（不使用 --no-cache）
   python deploy_docker.py --rebuild gateway --fast
-  python deploy_docker.py --rebuild openclaw,gateway --fast
+  python deploy_docker.py --rebuild hermes,gateway --fast
 
   # 完全清理重建
   python deploy_docker.py --clean
@@ -39,13 +40,12 @@
 
 import argparse
 import concurrent.futures
-import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import time
-
 # ── 颜色输出 ──────────────────────────────────────────────────────────
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -55,6 +55,11 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+AUTO_START_DOCKER_ENV = "NANOBOT_AUTO_START_DOCKER_DESKTOP"
+
+
+def env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_vite_api_url(host: str, gateway_port: int, relative_api: bool) -> str:
@@ -108,6 +113,13 @@ def check_prerequisites():
     """检查 docker 和 docker compose 是否可用。"""
     log("检查前置依赖...")
 
+    if env_flag(AUTO_START_DOCKER_ENV):
+        if not docker_result.ok:
+            error(docker_result.error or "Docker daemon 未运行，请先启动 Docker")
+            sys.exit(1)
+        if docker_result.started_desktop:
+            success("Docker Desktop 已通过 PowerShell 启动")
+
     for cmd, name in [("docker --version", "Docker"), ("docker compose version", "Docker Compose")]:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
@@ -118,7 +130,10 @@ def check_prerequisites():
     # 检查 docker daemon
     result = subprocess.run("docker info", shell=True, capture_output=True, text=True)
     if result.returncode != 0:
-        error("Docker daemon 未运行，请先启动 Docker")
+        error(
+            "Docker daemon 未运行，请先启动 Docker；WSL 本机场景可显式设置 "
+            f"{AUTO_START_DOCKER_ENV}=1 后再运行"
+        )
         sys.exit(1)
     success("Docker daemon 运行中")
 
@@ -173,11 +188,8 @@ def check_env_file():
         warn("未配置管理员账号 (ADMIN_USERNAME / ADMIN_PASSWORD)，管理后台将无法登录")
 
 
-
 def sync_deploy_copy_to_bridge():
-    """将 deploy_copy 内容复制到 openclaw/bridge-deploy-copy/，
-    供 Dockerfile 和 entrypoint 在容器启动时同步到用户 ~/.openclaw/。
-    """
+    """将 deploy_copy 内容复制到 openclaw/bridge-deploy-copy/，保留 OpenClaw fallback 构建路径。"""
     deploy_dir = os.path.join(PROJECT_DIR, "deploy_copy")
     if not os.path.isdir(deploy_dir):
         return
@@ -186,7 +198,7 @@ def sync_deploy_copy_to_bridge():
     if os.path.exists(dst):
         shutil.rmtree(dst)
     shutil.copytree(deploy_dir, dst)
-    success(f"deploy_copy → openclaw/bridge-deploy-copy/ 已同步")
+    success("deploy_copy → openclaw/bridge-deploy-copy/ 已同步")
 
 
 def build_openclaw_image():
@@ -201,6 +213,65 @@ def build_openclaw_image_fast():
     log("构建 openclaw:latest 基础镜像（使用缓存）...")
     run("docker build -f openclaw/Dockerfile.bridge -t openclaw:latest openclaw/")
     success("openclaw:latest 构建完成")
+
+
+def sync_deploy_copy_to_hermes():
+    """将 deploy_copy 内容复制到 hermes-agent/deploy_copy/，供 Hermes 镜像构建打包。"""
+    deploy_dir = os.path.join(PROJECT_DIR, "deploy_copy")
+    if not os.path.isdir(deploy_dir):
+        return
+
+    dst = os.path.join(PROJECT_DIR, "hermes-agent", "deploy_copy")
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(deploy_dir, dst)
+    success("deploy_copy → hermes-agent/deploy_copy/ 已同步")
+
+
+def _hermes_build_arg_flags(with_browser: bool) -> list[str]:
+    flags: list[str] = []
+    if with_browser:
+        flags.append("--build-arg HERMES_INSTALL_BROWSER=true")
+        download_host = os.environ.get("PLAYWRIGHT_DOWNLOAD_HOST", "").strip()
+        if download_host:
+            flags.append(f"--build-arg PLAYWRIGHT_DOWNLOAD_HOST={shlex.quote(download_host)}")
+    install_whatsapp_bridge = os.environ.get("HERMES_INSTALL_WHATSAPP_BRIDGE", "").strip().lower()
+    if install_whatsapp_bridge in {"1", "true", "yes", "on"}:
+        flags.append("--build-arg HERMES_INSTALL_WHATSAPP_BRIDGE=true")
+    return flags
+
+
+def _hermes_build_command(*, use_cache: bool = False, with_browser: bool = False) -> str:
+    parts = ["docker build"]
+    if not use_cache:
+        parts.append("--no-cache")
+    parts.extend(_hermes_build_arg_flags(with_browser))
+    parts.extend(
+        [
+            "-f hermes-agent/Dockerfile.bridge",
+            "-t nanobot-hermes-agent:latest",
+            "hermes-agent/",
+        ]
+    )
+    return " ".join(parts)
+
+
+def build_hermes_image(*, with_browser: bool = False):
+    """单次构建 Hermes dedicated bridge 镜像（Dockerfile.bridge 内含多 stage）。"""
+    log("构建 nanobot-hermes-agent:latest dedicated bridge 镜像...")
+    if with_browser:
+        log("Hermes browser tools enabled; Playwright Chromium will be installed during build.")
+    run(_hermes_build_command(use_cache=False, with_browser=with_browser))
+    success("nanobot-hermes-agent:latest 构建完成")
+
+
+def build_hermes_image_fast(*, with_browser: bool = False):
+    """使用缓存单次构建 Hermes dedicated bridge 镜像（Dockerfile.bridge 内含多 stage）。"""
+    log("构建 nanobot-hermes-agent:latest dedicated bridge 镜像（使用缓存）...")
+    if with_browser:
+        log("Hermes browser tools enabled; Playwright Chromium will be installed during build.")
+    run(_hermes_build_command(use_cache=True, with_browser=with_browser))
+    success("nanobot-hermes-agent:latest 构建完成")
 
 
 def _build_task(name: str, cmd: str):
@@ -282,8 +353,8 @@ def clean_all(compose_file: str):
 
 def health_check(host: str, gateway_port: int, frontend_port: int, retries: int = 30):
     """等待服务就绪并检查健康状态。"""
-    import urllib.request
     import json
+    import urllib.request
 
     log("等待服务就绪...")
 
@@ -331,7 +402,7 @@ def health_check(host: str, gateway_port: int, frontend_port: int, retries: int 
     return True
 
 
-def show_status(compose_file: str, host: str, gateway_port: int, frontend_port: int, simple_port: int = 3082, share_front_port: int = 3083):
+def show_status(compose_file: str, host: str, gateway_port: int, frontend_port: int, simple_port: int = 3082):
     """显示部署状态摘要。"""
     compose_args = f"-f {compose_file}"
     print(f"\n{BOLD}{'=' * 50}{RESET}")
@@ -340,8 +411,7 @@ def show_status(compose_file: str, host: str, gateway_port: int, frontend_port: 
     print(f"  用户前端:        http://{host}:{frontend_port}")
     print(f"  简化版前端:      http://{host}:{simple_port}")
     print(f"  管理员前端:      http://{host}:3081")
-    print(f"  共享前端:        http://{host}:{share_front_port}")
-    print(f"  共享OpenClaw:    http://{host}:18080")
+    print(f"  共享Hermes(API): http://{host}:8080")
     print(f"  platform网关:    http://{host}:{gateway_port}")
     print(f"  使用的compose文件: {compose_file}")
     print(f"{'=' * 50}\n")
@@ -367,12 +437,17 @@ def main():
     )
     parser.add_argument("--build-only", action="store_true", help="仅构建镜像，不启动服务")
     parser.add_argument("--restart", action="store_true", help="仅重启服务")
-    parser.add_argument("--rebuild", metavar="SERVICES", help="重建指定服务，逗号分隔 (openclaw,gateway,frontend)")
+    parser.add_argument("--rebuild", metavar="SERVICES", help="重建指定服务，逗号分隔 (hermes,gateway,frontend,manage-front,simple-front)")
     parser.add_argument("--clean", action="store_true", help="停止所有服务并清理数据")
-    parser.add_argument("--skip-base", action="store_true", help="跳过构建 openclaw 基础镜像")
+    parser.add_argument("--skip-base", action="store_true", help="跳过构建 Hermes dedicated bridge 基础镜像")
     parser.add_argument("--skip-health", action="store_true", help="跳过健康检查")
     parser.add_argument("--status", action="store_true", help="仅显示当前状态")
     parser.add_argument("--fast", action="store_true", help="使用 Docker 缓存加快构建速度（不使用 --no-cache）")
+    parser.add_argument(
+        "--with-browser",
+        action="store_true",
+        help="构建 Hermes 镜像时预装 Playwright Chromium（默认跳过以加快构建）",
+    )
     args = parser.parse_args()
 
     # 推断 gateway 端口
@@ -388,7 +463,7 @@ def main():
 
     # 仅显示状态
     if args.status:
-        show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082, share_front_port=3083)
+        show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082)
         return
 
     check_prerequisites()
@@ -401,7 +476,7 @@ def main():
     # 重启
     if args.restart:
         restart_services(args.compose)
-        show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082, share_front_port=3083)
+        show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082)
         return
 
     # 重建指定服务（逗号分隔）
@@ -410,30 +485,18 @@ def main():
 
         # 同步 deploy_copy
         sync_deploy_copy_to_bridge()
+        sync_deploy_copy_to_hermes()
 
-        # "openclaw" 表示重建基础镜像 + 清理旧用户容器
         if "openclaw" in services:
-            if args.fast:
-                build_openclaw_image_fast()
-            else:
-                build_openclaw_image()
+            warn("当前 hermes 分支默认不再重建 openclaw 基础镜像，已忽略 openclaw 关键字")
             services.remove("openclaw")
 
-            # 清理旧用户容器（它们用的是旧镜像）
-            log("清理旧用户容器...")
-            result = subprocess.run(
-                'docker ps -a --filter "name=openclaw-user-" -q',
-                shell=True, capture_output=True, text=True, cwd=PROJECT_DIR,
-            )
-            container_ids = result.stdout.strip()
-            if container_ids:
-                run(f"docker rm -f {container_ids}", check=False)
-                success("旧用户容器已清理")
-
-            # 清理 DB 中的容器记录，注释掉，不要删除数据库中的记录了
-            # log("清理数据库容器记录...")
-            # run('docker exec openclaw-postgres psql -U nanobot -d nanobot_platform -c "DELETE FROM containers;"', check=False)
-            # success("数据库容器记录已清理")
+        if "hermes" in services:
+            if args.fast:
+                build_hermes_image_fast(with_browser=args.with_browser)
+            else:
+                build_hermes_image(with_browser=args.with_browser)
+            services.remove("hermes")
 
         # 设置 VITE_API_URL（frontend 构建需要）
         if args.host and args.gateway_port:
@@ -451,13 +514,14 @@ def main():
             run(f"docker compose {compose_args} up -d {services_str}")
             success(f"服务 {services_str} 已重建并启动")
 
-        show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082, share_front_port=3083)
+        show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082)
         return
 
     check_env_file()
 
-    # 同步 deploy_copy 到 bridge 构建目录
+    # 同步 deploy_copy 到 runtime 构建目录
     sync_deploy_copy_to_bridge()
+    sync_deploy_copy_to_hermes()
 
     # 设置 VITE_API_URL（frontend 构建需要）
     api_url = resolve_vite_api_url(args.host, args.gateway_port, args.relative_api)
@@ -467,10 +531,13 @@ def main():
     compose_args = f"-f {args.compose}"
 
     if not args.skip_base:
-        # 并行构建: openclaw 基础镜像 + compose 服务
-        log("并行构建 openclaw 基础镜像 + compose 服务...")
+        # 并行构建: Hermes dedicated bridge 基础镜像 + compose 服务
+        log("并行构建 Hermes dedicated bridge 基础镜像 + compose 服务...")
         tasks = {
-            "openclaw:latest": "docker build --no-cache -f openclaw/Dockerfile.bridge -t openclaw:latest openclaw/",
+            "nanobot-hermes-agent:latest": _hermes_build_command(
+                use_cache=False,
+                with_browser=args.with_browser,
+            ),
             "compose services": f"docker compose {compose_args} build --parallel",
         }
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -502,7 +569,7 @@ def main():
         check_host = "localhost" if args.host in ("0.0.0.0",) else args.host
         health_check(check_host, args.gateway_port, args.frontend_port)
 
-    show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082, share_front_port=3083)
+    show_status(args.compose, args.host, args.gateway_port, args.frontend_port, simple_port=3082)
 
 
 if __name__ == "__main__":

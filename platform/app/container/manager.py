@@ -1,15 +1,17 @@
-"""Docker container lifecycle management for per-user openclaw instances."""
+"""Docker container lifecycle management for per-user dedicated runtime instances."""
 
 from __future__ import annotations
 
 import io
+import json
 import secrets
 import tarfile
 import time
-from pathlib import Path
 
 import docker
-from docker.errors import APIError as DockerAPIError, NotFound as DockerNotFound
+import yaml
+from docker.errors import APIError as DockerAPIError
+from docker.errors import NotFound as DockerNotFound
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +85,10 @@ def _get_container_manager():
     return _client
 
 
+def get_docker_container(container_id_or_name: str) -> docker.models.containers.Container:
+    return _docker().containers.get(container_id_or_name)
+
+
 def _ensure_network() -> None:
     """Create the internal Docker network if it doesn't exist."""
     client = _docker()
@@ -117,6 +123,359 @@ def _is_host_port_in_use(client: docker.DockerClient, host_port: int) -> bool:
                 if (binding.get("HostPort") or "") == port_str:
                     return True
     return False
+
+
+def _runtime_backend() -> str:
+    return (settings.dedicated_runtime_backend or "openclaw").strip().lower()
+
+
+def _container_name(short_id: str) -> str:
+    prefix = (settings.dedicated_runtime_container_name_prefix or "openclaw-user").strip() or "openclaw-user"
+    return f"{prefix}-{short_id}"
+
+
+def _data_volume_name(short_id: str) -> str:
+    prefix = (settings.dedicated_runtime_data_volume_prefix or "openclaw-data").strip() or "openclaw-data"
+    return f"{prefix}-{short_id}"
+
+
+def _hermes_home_volume_name(short_id: str) -> str:
+    return f"{_data_volume_name(short_id)}-home"
+
+
+def _internal_port() -> int:
+    if _runtime_backend() == "hermes":
+        return settings.dedicated_hermes_internal_port
+    return 18080
+
+
+def _runtime_image() -> str:
+    if _runtime_backend() == "hermes":
+        return settings.hermes_image
+    return settings.openclaw_image
+
+
+def _build_runtime_mounts(data_vol: str, short_id: str) -> list:
+    """Build volume mounts for the user container.
+
+    Hermes containers get two named volumes:
+      - ``/workspace``   — user workspace (skills, files, sessions)
+      - ``/opt/data``    — HERMES_HOME (profiles, config, skills cache)
+    """
+    mounts = [
+        docker.types.Mount("/workspace", data_vol, type="volume"),
+    ]
+    if _runtime_backend() == "hermes":
+        home_vol = _hermes_home_volume_name(short_id)
+        mounts.append(docker.types.Mount("/opt/data", home_vol, type="volume"))
+    return mounts
+
+
+def _runtime_command() -> list[str]:
+    if _runtime_backend() == "hermes":
+        return []
+    return ["node", "bridge/dist/bridge/start.js"]
+
+
+def _runtime_environment(container_token: str) -> dict[str, str]:
+    env = {
+        "NANOBOT_PROXY__URL": "http://gateway:8080/llm/v1",
+        "NANOBOT_PROXY__TOKEN": container_token,
+        "NANOBOT_AGENTS__DEFAULTS__MODEL": settings.default_model,
+        "TZ": settings.container_tz,
+    }
+    if _runtime_backend() == "openclaw":
+        env["BRIDGE_ENABLE_CHANNELS"] = "1"
+    else:
+        env.update(
+            {
+                "PYTHONUNBUFFERED": "1",
+                "API_SERVER_ENABLED": "true",
+                "API_SERVER_HOST": "0.0.0.0",
+                "API_SERVER_PORT": str(settings.dedicated_hermes_internal_port),
+                "API_SERVER_KEY": settings.dedicated_hermes_api_key,
+                "GATEWAY_ALLOW_ALL_USERS": "true",
+                "OPENAI_API_KEY": settings.dedicated_hermes_default_api_key,
+                "HERMES_API_TOOLSETS": settings.hermes_api_toolsets,
+                "HERMES_REASONING_EFFORT": settings.hermes_reasoning_effort,
+                "HERMES_SERVICE_TIER": settings.hermes_service_tier,
+            }
+        )
+    return env
+
+
+def _container_config(container: docker.models.containers.Container) -> dict:
+    config = container.attrs.get("Config", {}) or {}
+    return config if isinstance(config, dict) else {}
+
+
+def _container_matches_runtime(container: docker.models.containers.Container) -> bool:
+    """Return whether an existing user container matches the configured runtime backend."""
+    config = _container_config(container)
+    env = set(config.get("Env") or [])
+    entrypoint = " ".join(str(part) for part in (config.get("Entrypoint") or []))
+    command = " ".join(str(part) for part in (config.get("Cmd") or []))
+
+    if _runtime_backend() == "hermes":
+        return (
+            "API_SERVER_ENABLED=true" in env
+            and "/opt/hermes/docker/entrypoint.sh" in entrypoint
+            and "gateway" in command
+        )
+
+    return "BRIDGE_ENABLE_CHANNELS=1" in env and "bridge/dist/bridge/start.js" in command
+
+
+def _runtime_published_ports() -> dict[str, tuple[str, int | None]]:
+    if _runtime_backend() == "hermes":
+        return {
+            f"{_internal_port()}/tcp": (settings.user_container_bind_ip, None),
+        }
+    return {
+        "5900/tcp": (settings.user_container_bind_ip, None),
+        "30000/tcp": (settings.user_container_bind_ip, None),
+    }
+
+
+def _runtime_preferred_ports(browser_port: int | None, service_port: int | None) -> dict[str, tuple[str, int | None]] | None:
+    if _runtime_backend() == "hermes":
+        return None
+    if browser_port is None or service_port is None or browser_port == service_port:
+        return None
+    return {
+        "5900/tcp": (settings.user_container_bind_ip, browser_port),
+        "30000/tcp": (settings.user_container_bind_ip, service_port),
+    }
+
+
+def _published_port_bindings(container: docker.models.containers.Container) -> tuple[tuple[str, str], tuple[str, str]]:
+    if _runtime_backend() == "hermes":
+        return ("", ""), _published_binding(container, f"{_internal_port()}/tcp")
+    return _published_binding(container, "5900/tcp"), _published_binding(container, "30000/tcp")
+
+
+def _build_runtime_metadata_markdown(user_id: str, container_name: str, runtime_backend: str) -> str:
+    now = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime())
+    payload = {
+        "user_id": user_id,
+        "container": container_name,
+        "runtime_backend": runtime_backend,
+        "generated_at": now,
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _build_hermes_config_yaml() -> str:
+    config = {
+        "model": {
+            "default": settings.default_model,
+            "provider": settings.dedicated_hermes_default_provider,
+            "base_url": settings.dedicated_hermes_default_base_url,
+        },
+        "platform_toolsets": {
+            "api_server": _hermes_api_toolsets(),
+        },
+        "agent": {
+            "reasoning_effort": settings.hermes_reasoning_effort,
+            "service_tier": settings.hermes_service_tier,
+        },
+    }
+    return yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+
+
+def _hermes_api_toolsets() -> list[str]:
+    raw = (settings.hermes_api_toolsets or "").strip()
+    if not raw or raw.lower() in {"none", "off", "false", "0"}:
+        return []
+    if raw.lower() in {"full", "default", "hermes-api-server"}:
+        return ["hermes-api-server"]
+    return [part.strip() for part in raw.replace(";", ",").split(",") if part.strip()]
+
+
+def _build_hermes_env_file() -> str:
+    lines = [
+        f"API_SERVER_KEY={settings.dedicated_hermes_api_key}",
+        "GATEWAY_ALLOW_ALL_USERS=true",
+        f"HERMES_API_TOOLSETS={settings.hermes_api_toolsets}",
+        f"HERMES_REASONING_EFFORT={settings.hermes_reasoning_effort}",
+        f"HERMES_SERVICE_TIER={settings.hermes_service_tier}",
+    ]
+    default_api_key = (settings.dedicated_hermes_default_api_key or "").strip()
+    if default_api_key:
+        lines.append(f"OPENAI_API_KEY={default_api_key}")
+    return "\n".join(lines) + "\n"
+
+
+def _platform_proxy_model_ref(model: str) -> str:
+    model = (model or "").strip()
+    if not model:
+        return ""
+    if model.startswith("platform-proxy/"):
+        return model
+    return f"platform-proxy/{model}"
+
+
+def _apply_openclaw_model_config(config: dict, default_model: str) -> bool:
+    target_model = _platform_proxy_model_ref(default_model)
+    if not target_model:
+        return False
+
+    agents = config.setdefault("agents", {})
+    defaults = agents.setdefault("defaults", {})
+    changed = False
+    if defaults.get("model") != target_model:
+        defaults["model"] = target_model
+        changed = True
+
+    agent_list = agents.get("list")
+    if not isinstance(agent_list, list):
+        agent_list = []
+        agents["list"] = agent_list
+
+    main_agent = None
+    for agent in agent_list:
+        if isinstance(agent, dict) and str(agent.get("id") or "").lower() == "main":
+            main_agent = agent
+            break
+
+    if main_agent is None:
+        agent_list.insert(0, {"id": "main", "default": True, "model": target_model})
+        changed = True
+    elif main_agent.get("model") != target_model:
+        main_agent["model"] = target_model
+        changed = True
+
+    return changed
+
+
+def _write_openclaw_model_config(container: docker.models.containers.Container) -> None:
+    target_model = _platform_proxy_model_ref(settings.default_model)
+    if not target_model:
+        return
+    script = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+target_model = sys.argv[1]
+config_path = Path("/root/.openclaw/openclaw.json")
+last_text = None
+stable_reads = 0
+for _ in range(40):
+    if config_path.exists():
+        try:
+            current_text = config_path.read_text(encoding="utf-8")
+        except OSError:
+            current_text = None
+        if current_text is not None:
+            if current_text == last_text:
+                stable_reads += 1
+            else:
+                last_text = current_text
+                stable_reads = 1
+            if stable_reads >= 4:
+                break
+    time.sleep(0.5)
+
+if config_path.exists():
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+else:
+    config = {}
+
+agents = config.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+defaults["model"] = target_model
+agent_list = agents.setdefault("list", [])
+main_agent = None
+for agent in agent_list:
+    if isinstance(agent, dict) and str(agent.get("id") or "").lower() == "main":
+        main_agent = agent
+        break
+if main_agent is None:
+    agent_list.insert(0, {"id": "main", "default": True, "model": target_model})
+else:
+    main_agent["model"] = target_model
+config_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+"""
+    result = container.exec_run(["python3", "-c", script, target_model])
+    if result.exit_code != 0:
+        output = result.output.decode("utf-8", errors="replace") if result.output else ""
+        raise RuntimeError(f"failed to patch OpenClaw model config: {output}")
+
+
+def _write_runtime_metadata(container: docker.models.containers.Container, markdown: str) -> None:
+    content = markdown.encode("utf-8")
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+        workspace_dir = tarfile.TarInfo(name="workspace")
+        workspace_dir.type = tarfile.DIRTYPE
+        workspace_dir.mode = 0o755
+        workspace_dir.mtime = int(time.time())
+        tar.addfile(workspace_dir)
+
+        metadata_file = tarfile.TarInfo(name="workspace/platform-runtime.json")
+        metadata_file.size = len(content)
+        metadata_file.mode = 0o644
+        metadata_file.mtime = int(time.time())
+        tar.addfile(metadata_file, io.BytesIO(content))
+
+    tar_buffer.seek(0)
+    ok = container.put_archive("/", tar_buffer.read())
+    if not ok:
+        raise RuntimeError("failed to write platform-runtime.json into container workspace")
+
+
+def _repair_hermes_data_ownership(container: docker.models.containers.Container) -> None:
+    """Make files injected into the Hermes data volume writable by the hermes user."""
+    data_volume = ""
+    for mount in container.attrs.get("Mounts", []) or []:
+        if mount.get("Destination") == "/opt/data" and mount.get("Type") == "volume":
+            data_volume = str(mount.get("Name") or "").strip()
+            break
+
+    if data_volume:
+        _docker().containers.run(
+            image=_runtime_image(),
+            entrypoint="chown",
+            command=["-R", "hermes:hermes", "/opt/data"],
+            mounts=[docker.types.Mount("/opt/data", data_volume, type="volume")],
+            remove=True,
+        )
+        return
+
+    result = container.exec_run(["chown", "-R", "hermes:hermes", "/opt/data"], user="root")
+    exit_code = getattr(result, "exit_code", result[0] if isinstance(result, tuple) else 0)
+    if exit_code != 0:
+        output = getattr(result, "output", result[1] if isinstance(result, tuple) and len(result) > 1 else b"")
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        raise RuntimeError(f"failed to repair Hermes data ownership: {output}")
+
+
+def _write_hermes_runtime_files(container: docker.models.containers.Container) -> None:
+    config_content = _build_hermes_config_yaml().encode("utf-8")
+    env_content = _build_hermes_env_file().encode("utf-8")
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+        config_file = tarfile.TarInfo(name="config.yaml")
+        config_file.size = len(config_content)
+        config_file.mode = 0o644
+        config_file.mtime = int(time.time())
+        tar.addfile(config_file, io.BytesIO(config_content))
+
+        env_file = tarfile.TarInfo(name=".env")
+        env_file.size = len(env_content)
+        env_file.mode = 0o600
+        env_file.mtime = int(time.time())
+        tar.addfile(env_file, io.BytesIO(env_content))
+
+    tar_buffer.seek(0)
+    ok = container.put_archive("/opt/data", tar_buffer.read())
+    if not ok:
+        raise RuntimeError("failed to write Hermes config.yaml/.env into container data volume")
+    _repair_hermes_data_ownership(container)
 
 
 def _build_expose_port_skill_markdown(
@@ -286,6 +645,7 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
     
     container_token = secrets.token_urlsafe(32)
     short_id = user_id[:8]
+    runtime_backend = _runtime_backend()
 
     # Insert DB record to claim the unique user_id slot.
     # ON CONFLICT DO NOTHING avoids PostgreSQL ERROR logs on races.
@@ -297,7 +657,7 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
             container_token=container_token,
             status="creating",
             internal_host="",
-            internal_port=18080,
+            internal_port=_internal_port(),
         )
         .on_conflict_do_nothing(index_elements=["user_id"])
         .returning(Container.__table__.c.id)
@@ -368,8 +728,8 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
         data_vol = f"openclaw-data-{short_id}"
         container_name = f"openclaw-user-{short_id}"
 
-    data_vol = f"openclaw-data-{short_id}"
-    container_name = f"openclaw-user-{short_id}"
+    data_vol = _data_volume_name(short_id)
+    container_name = _container_name(short_id)
 
     # Remove any stale container with the same name
     try:
@@ -378,30 +738,15 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
     except DockerNotFound:
         pass
 
-    # Fetch user's SSO token if available (e.g. InfoX-Med)
-    # user_result = await db.execute(select(User).where(User.id == user_id))
-    # user_row = user_result.scalar_one_or_none()
-    # sso_token = user_row.sso_token if user_row else None
-
-    container_env = {
-        "NANOBOT_PROXY__URL": f"http://gateway:8080/llm/v1",
-        "NANOBOT_PROXY__TOKEN": container_token,
-        "NANOBOT_AGENTS__DEFAULTS__MODEL": settings.default_model,
-        "TZ": settings.container_tz,
-        "BRIDGE_ENABLE_CHANNELS": "1",
-    }
-    # if sso_token:
-    #     container_env["SSO_TOKEN"] = sso_token
+    container_env = _runtime_environment(container_token)
 
     run_kwargs = {
-        "image": settings.openclaw_image,
-        "command": ["node", "bridge/dist/bridge/start.js"],
+        "image": _runtime_image(),
+        "command": _runtime_command(),
         "name": container_name,
         "detach": True,
         "environment": container_env,
-        "mounts": [
-            docker.types.Mount("/root/.openclaw", data_vol, type="volume"),
-        ],
+        "mounts": _build_runtime_mounts(data_vol, short_id),
         "network": settings.container_network,
         "mem_limit": settings.container_memory_limit,
         "shm_size": settings.container_shm_size,
@@ -415,34 +760,21 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
         preferred_browser_port = binding.host_port_browser if binding is not None else None
         preferred_service_port = binding.host_port_service if binding is not None else None
 
-        preferred_usable = (
-            preferred_browser_port is not None
-            and preferred_service_port is not None
-            and preferred_browser_port != preferred_service_port
-            and not _is_host_port_in_use(client, preferred_browser_port)
-            and not _is_host_port_in_use(client, preferred_service_port)
+        preferred_ports = _runtime_preferred_ports(preferred_browser_port, preferred_service_port)
+        preferred_usable = preferred_ports is not None and all(
+            not _is_host_port_in_use(client, host_port)
+            for _container_port, (_host_ip, host_port) in preferred_ports.items()
+            if host_port is not None
         )
 
-        if preferred_usable:
-            run_kwargs["ports"] = {
-                "5900/tcp": (settings.user_container_bind_ip, preferred_browser_port),
-                "30000/tcp": (settings.user_container_bind_ip, preferred_service_port),
-            }
-        else:
-            run_kwargs["ports"] = {
-                "5900/tcp": (settings.user_container_bind_ip, None),
-                "30000/tcp": (settings.user_container_bind_ip, None),
-            }
+        run_kwargs["ports"] = preferred_ports if preferred_usable else _runtime_published_ports()
 
     try:
         docker_container = client.containers.run(**run_kwargs)
     except DockerAPIError as exc:
         # Preferred ports can race with other creators; fallback to random publish.
         if settings.user_container_publish_ports and "port is already allocated" in str(exc).lower():
-            run_kwargs["ports"] = {
-                "5900/tcp": (settings.user_container_bind_ip, None),
-                "30000/tcp": (settings.user_container_bind_ip, None),
-            }
+            run_kwargs["ports"] = _runtime_published_ports()
             docker_container = client.containers.run(**run_kwargs)
         else:
             await db.rollback()
@@ -454,16 +786,25 @@ async def create_container(db: AsyncSession, user_id: str) -> Container | None:
 
     # Read container IP on the internal network
     docker_container.reload()
-    browser_binding = _published_binding(docker_container, "5900/tcp")
-    service_binding = _published_binding(docker_container, "30000/tcp")
-    expose_markdown = _build_expose_port_skill_markdown(
-        user_id=user_id,
-        container_name=container_name,
-        browser_binding=browser_binding,
-        service_binding=service_binding,
-        public_base_url=settings.public_base_url,
-    )
-    _write_expose_port_skill(docker_container, expose_markdown)
+    browser_binding, service_binding = _published_port_bindings(docker_container)
+    if runtime_backend == "openclaw":
+        _write_openclaw_model_config(docker_container)
+        expose_markdown = _build_expose_port_skill_markdown(
+            user_id=user_id,
+            container_name=container_name,
+            browser_binding=browser_binding,
+            service_binding=service_binding,
+            public_base_url=settings.public_base_url,
+        )
+        _write_expose_port_skill(docker_container, expose_markdown)
+    else:
+        runtime_metadata = _build_runtime_metadata_markdown(
+            user_id=user_id,
+            container_name=container_name,
+            runtime_backend=runtime_backend,
+        )
+        _write_runtime_metadata(docker_container, runtime_metadata)
+        _write_hermes_runtime_files(docker_container)
 
     network_settings = docker_container.attrs["NetworkSettings"]["Networks"]
     internal_ip = network_settings.get(settings.container_network, {}).get("IPAddress", "")
@@ -607,9 +948,27 @@ async def _ensure_dedicated_container_running(db: AsyncSession, user_id: str, re
 
     client = _docker()
 
+    async def recreate_record(record: Container, docker_container=None) -> Container:
+        if docker_container is not None:
+            try:
+                docker_container.remove(force=True)
+            except DockerNotFound:
+                pass
+        await db.delete(record)
+        await db.commit()
+        created = await create_container(db, user_id)
+        if created is not None:
+            return created
+        found = await get_container(db, user_id)
+        if found is not None:
+            return found
+        raise RuntimeError("Failed to recreate container")
+
     if record.status == "paused":
         try:
             c = client.containers.get(record.docker_id)
+            if not _container_matches_runtime(c):
+                return await recreate_record(record, c)
             c.unpause()
             await db.execute(
                 update(Container)
@@ -620,32 +979,18 @@ async def _ensure_dedicated_container_running(db: AsyncSession, user_id: str, re
             record.status = "running"
         except DockerNotFound:
             # Container was removed externally — recreate
-            await db.delete(record)
-            await db.commit()
-            created = await create_container(db, user_id)
-            if created is not None:
-                return created
-            record = await get_container(db, user_id)
-            if record is not None:
-                return record
-            raise RuntimeError("Failed to recreate container")
+            return await recreate_record(record)
 
     elif record.status == "archived":
         # Recreate from persisted data volumes
-        await db.delete(record)
-        await db.commit()
-        created = await create_container(db, user_id)
-        if created is not None:
-            return created
-        record = await get_container(db, user_id)
-        if record is not None:
-            return record
-        raise RuntimeError("Failed to recreate container")
+        return await recreate_record(record)
 
     elif record.status == "running":
         # Verify it's actually running
         try:
             c = client.containers.get(record.docker_id)
+            if not _container_matches_runtime(c):
+                return await recreate_record(record, c)
             if c.status != "running":
                 c.start()
                 c.reload()
@@ -663,15 +1008,7 @@ async def _ensure_dedicated_container_running(db: AsyncSession, user_id: str, re
                     await db.commit()
                 break
         except DockerNotFound:
-            await db.delete(record)
-            await db.commit()
-            created = await create_container(db, user_id)
-            if created is not None:
-                return created
-            record = await get_container(db, user_id)
-            if record is not None:
-                return record
-            raise RuntimeError("Failed to recreate container")
+            return await recreate_record(record)
 
     return record
 
@@ -707,12 +1044,12 @@ async def resume_container(db: AsyncSession, user_id: str) -> bool:
     client = _docker()
     try:
         c = client.containers.get(record.docker_id)
-        
+
         if record.status == "paused":
             c.unpause()
         elif record.status == "stopped":
             c.start()
-        
+
         # Reload to get latest status
         c.reload()
         await db.execute(

@@ -66,13 +66,26 @@ export interface Session {
   updated_at: string | null
 }
 
+export interface ToolCallInfo {
+  id?: string
+  function?: { name: string; arguments?: string }
+}
+
+export interface ChatMessage {
+  role: string
+  content: string
+  timestamp?: string | null
+  finish_reason?: string | null
+  tool_name?: string | null
+  tool_calls?: ToolCallInfo[] | null
+  tool_call_id?: string | null
+  reasoning_content?: string | null
+  _thinking?: string | null
+}
+
 export interface SessionDetail {
   key: string
-  messages: Array<{
-    role: string
-    content: string
-    timestamp: string | null
-  }>
+  messages: ChatMessage[]
   created_at: string | null
   updated_at: string | null
 }
@@ -82,6 +95,8 @@ export interface Skill {
   description: string
   source?: string
   disabled?: boolean
+  path?: string
+  installed?: Skill[]
 }
 
 export interface SlashCommandInfo {
@@ -106,6 +121,12 @@ export interface AgentRunWaitResult {
   startedAt: number | null
   endedAt: number | null
   error: unknown
+}
+
+export interface SendChatMessageResult {
+  ok: boolean
+  runId: string | null
+  sessionKey: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +285,12 @@ export async function getMe(): Promise<AuthUser> {
   return fetchJSON<AuthUser>('/api/auth/me')
 }
 
+export async function prewarmRuntime(): Promise<void> {
+  await fetchJSON<unknown>('/api/openclaw/runtime/prewarm', {
+    method: 'POST',
+  })
+}
+
 export async function generateApiToken(): Promise<{ api_token: string; expires_in_days: number }> {
   return fetchJSON<{ api_token: string; expires_in_days: number }>('/api/auth/api-token', {
     method: 'POST',
@@ -380,14 +407,27 @@ export async function updateSessionTitle(
 export async function sendChatMessage(
   sessionKey: string,
   message: string,
-): Promise<{ ok: boolean; runId: string | null }> {
-  return fetchJSON<{ ok: boolean; runId: string | null }>(
+): Promise<SendChatMessageResult> {
+  const payload = await fetchJSON<Record<string, unknown>>(
     `/api/openclaw/sessions/${encodeURIComponent(sessionKey)}/messages`,
     {
       method: 'POST',
       body: JSON.stringify({ message }),
     },
   )
+  return {
+    ok: payload.ok !== false,
+    runId: typeof payload.runId === 'string'
+      ? payload.runId
+      : typeof payload.run_id === 'string'
+        ? payload.run_id
+        : null,
+    sessionKey: typeof payload.sessionKey === 'string'
+      ? payload.sessionKey
+      : typeof payload.session_key === 'string'
+        ? payload.session_key
+        : sessionKey,
+  }
 }
 
 export async function waitForAgentRun(
@@ -398,6 +438,14 @@ export async function waitForAgentRun(
   return fetchJSON<AgentRunWaitResult>(
     `/api/openclaw/runs/${encodeURIComponent(runId)}/wait?${params.toString()}`,
   )
+}
+
+export function getRunEventsStreamUrl(runId: string): string {
+  const token = getAccessToken()
+  const params = new URLSearchParams()
+  if (token) params.set('token', token)
+  const suffix = params.toString()
+  return `/api/openclaw/runs/${encodeURIComponent(runId)}/events${suffix ? `?${suffix}` : ''}`
 }
 
 export async function uploadFileToWorkspace(
@@ -438,7 +486,8 @@ export async function listSkills(): Promise<Skill[]> {
 }
 
 export async function deleteSkill(name: string): Promise<void> {
-  await fetchJSON(`/api/openclaw/skills/${encodeURIComponent(name)}`, {
+  const safePath = name.split('/').map(encodeURIComponent).join('/')
+  await fetchJSON(`/api/openclaw/skills/${safePath}`, {
     method: 'DELETE',
   })
 }
@@ -471,7 +520,8 @@ export async function uploadSkillZip(file: File): Promise<Skill> {
 }
 
 export function downloadSkillUrl(name: string): string {
-  return `${API_URL}/api/openclaw/skills/${encodeURIComponent(name)}/download`
+  const safePath = name.split('/').map(encodeURIComponent).join('/')
+  return `${API_URL}/api/openclaw/skills/${safePath}/download`
 }
 
 export async function getStatus(): Promise<Record<string, unknown>> {
@@ -479,8 +529,7 @@ export async function getStatus(): Promise<Record<string, unknown>> {
 }
 
 export async function ping(): Promise<{ message: string }> {
-  // Check the user's OpenClaw container status, not just the gateway
-  return fetchJSON<{ message: string }>('/api/openclaw/ping')
+  return fetchJSON<{ message: string }>('/api/ping')
 }
 
 // ---------------------------------------------------------------------------

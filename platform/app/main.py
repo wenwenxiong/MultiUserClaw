@@ -9,11 +9,13 @@ import asyncpg
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api_compat import openclaw_compat
 from app.config import settings
 from app.db.engine import engine
 from app.db.models import Base
-from app.logging_setup import setup_logging, log_settings_summary
-from app.routes import auth, llm, proxy, admin, shared_openclaw
+from app.logging_setup import log_settings_summary, setup_logging
+from app.routes import admin, auth, llm, proxy
+from app.runtime_router import close_runtime_backends
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -94,7 +96,8 @@ async def _migrate_add_missing_columns() -> None:
     no type changes, no drops).  Sufficient for iterative development without a
     full Alembic setup.
     """
-    from sqlalchemy import inspect as sa_inspect, text
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text
 
     async with engine.connect() as conn:
         for table in Base.metadata.sorted_tables:
@@ -146,6 +149,7 @@ async def lifespan(app: FastAPI):
     await _migrate_add_missing_columns()
     await _ensure_admin_user()
     yield
+    await close_runtime_backends()
     await engine.dispose()
 
 
@@ -166,9 +170,8 @@ app.add_middleware(
 # Mount route groups
 app.include_router(auth.router)
 app.include_router(llm.router)
+app.include_router(openclaw_compat.router)
 app.include_router(proxy.router)
-# 对于共享openclaw的路由api注册
-app.include_router(shared_openclaw.router)
 app.include_router(admin.router)
 
 

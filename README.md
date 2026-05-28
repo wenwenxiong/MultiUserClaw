@@ -1,19 +1,17 @@
-# MultiUserClaw - 多用户 AI SaaS OpenClaw 平台
+# MultiUserClaw - 多用户 AI SaaS Hermes Agent 平台
 
-基于 OpenClaw 改造的轻量级 AI 助手框架，可以快速打造商用 SaaS 平台，支持多租户隔离部署、多平台渠道接入、工具调用、定时任务和 Web 实时通信。
+基于 Hermes 改造的轻量级 AI 助手框架，可以快速打造商用 SaaS 平台，支持多租户隔离部署、多平台渠道接入、工具调用、定时任务和 Web 实时通信。
 
 **在线体验地址**：https://ai.infox-med.com:13080/ （直接注册即可使用）
-
-**当前 OpenClaw 版本**：🦞 OpenClaw 2026.4.10
+当前默认内核后端：Hermes Agent
 
 ---
 
 ## 📌 版本分支说明
 
-- **main 分支**：当前主分支，基于 OpenClaw 2026.4.10
-- **simple_web 分支**：简单的单用户 Web 界面，适合单用户测试
+- **main 分支**：当前主分支，基于hermes，因为hermes比openclaw快很多，所以全面切换为hermes分支
+- **openclaw 分支**：当前主分支，基于 OpenClaw 2026.5.10
 - **nanobot014v3 分支**：nanobot 的 0.1.4 post v3 版本
-- **openclaw_oldfrontend 分支**：基于 OpenClaw 2026.3.3 (eae1484) 的旧版本前端
 
 ---
 
@@ -368,20 +366,15 @@ Frontend (前端界面) → Platform (平台网关) → OpenClaw Bridge (中间�
     | 2. 查找/启动用户容器
     | 3. WebSocket 代理
     v
-[用户容器] — 每个用户一个独立 Docker 容器
+[用户容器] — 每个 dedicated 用户一个独立 Docker 容器
     |
     |  容器内部结构:
     |  ┌─────────────────────────────────────────┐
-    |  │  Bridge (Node.js, 端口 18080)            │
-    |  │    - HTTP API 服务器                      │
-    |  │    - WebSocket 中继                       │
-    |  │              |                            │
-    |  │              v                            │
-    |  │  OpenClaw Gateway (端口 18789, loopback)  │
-    |  │    - Agent 处理引擎                       │
+    |  │  Hermes API Server (端口 18080)           │
+    |  │    - HTTP / SSE API                       │
+    |  │    - Session / Run 管理                   │
     |  │    - 工具调用 (bash/文件/搜索等)           │
     |  │    - Skills 系统                          │
-    |  │    - Session 管理                         │
     |  └─────────────────────────────────────────┘
     |
     | Agent 需要调用 LLM 时:
@@ -399,39 +392,40 @@ Frontend (前端界面) → Platform (平台网关) → OpenClaw Bridge (中间�
 用户在浏览器看到回复
 ```
 
-### 核心 API 转发流程
+核心转发兼容 API 的流程
+```  具体流程：
 
+   1. Frontend (前端)
+      - 运行在 3080 端口
+      - Vite 配置将 /api 代理到 http://localhost:8080（gateway）
+
+   2. Gateway / Platform (平台后端)
+      - 运行在 8080 端口，由 ./platform 构建
+      - 处理认证、用户管理、数据库
+      - 对于 /api/openclaw/* 和 /api/shared-openclaw/* 路径，通过 platform/app/api_compat/openclaw_compat.py 调用当前 runtime backend
+
+   3. Hermes Runtime (用户容器内或 shared runtime)
+      - Dedicated 用户有独立 Docker 容器；shared 用户共用 shared runtime，并由平台校验 session/run 归属
+      - Hermes API 服务运行在 18080 端口（dedicated）或 8080 端口（shared）
+      - 提供 sessions、runs、skills、workspace 等 runtime 能力
 ```
-1. Frontend (前端)
-   - 运行在 3080 端口
-   - Vite 配置将 /api 代理到 http://localhost:8080（gateway）
 
-2. Gateway / Platform (平台后端)
-   - 运行在 8080 端口，由 ./platform 构建
-   - 处理认证、用户管理、数据库
-   - 对于 /api/openclaw/* 路径，通过 platform/app/routes/proxy.py 反向代理到用户的 OpenClaw 容器
-
-3. OpenClaw Bridge (用户容器内)
-   - 每个用户有独立的 Docker 容器
-   - Bridge 服务运行在 18080 端口（WebSocket）和 8080 端口（HTTP API）
-   - 提供 agents、sessions、skills、cron 等功能
-```
-
-### 关键设计决策
+### 1.2 关键设计决策
 
 | 决策 | 说明 |
 |------|------|
-| **OpenClaw 作为 Agent 核心** | 替代原有 nanobot Python Agent，使用 OpenClaw（TypeScript/Node.js）作为每个用户的 AI 运行时，功能更强大 |
-| **Bridge 适配层** | 在 OpenClaw 外包装一层 Bridge，提供 HTTP API + WS 中继，适配平台的多租户管理 |
+| **Hermes 作为默认 Agent 核心** | dedicated / shared runtime 默认走 Hermes Agent 容器；OpenClaw backend 作为显式 fallback 保留 |
+| **OpenClaw-compatible API 适配层** | 对外继续保留 `/api/openclaw/*`、`/api/shared-openclaw/*`，底层由 runtime backend selector 分流 |
 | **API Key 不进容器** | 所有 LLM API Key 只存在于 Gateway 环境变量中，容器通过 Token 代理访问 |
-| **容器级隔离** | 每个用户独立容器、独立 Volume，互不干扰 |
+| **Dedicated 容器级隔离** | dedicated 用户独立容器、独立 Volume，互不干扰 |
+| **Shared 逻辑隔离** | shared 用户共用 runtime；平台按 agent/session/workspace 前缀隔离，并记录 run ownership 防止跨用户读取 run 结果或事件 |
 | **按需创建** | 用户首次聊天时才创建容器，空闲 30 分钟暂停，30 天归档 |
 
 ---
 
-## 🐳 多租户部署（Docker Compose）
+## 2. 多租户部署（Docker Compose）
 
-### 架构
+### 2.1 架构
 
 ```
 浏览器 --> frontend:3080 --(JS请求)--> gateway(platform):8080 --> 用户容器(openclaw)
@@ -447,12 +441,12 @@ Frontend (前端界面) → Platform (平台网关) → OpenClaw Bridge (中间�
 - **用户容器**：每个用户一个独立的 OpenClaw 实例（通过 Bridge 启动），自动创建，数据隔离
 - **PostgreSQL**：存储用户账户、容器元数据、用量记录
 
-### 前置条件
+### 2.2 前置条件
 
 - Docker & Docker Compose
 - 至少一个 LLM 提供商的 API Key
 
-### 配置 `.env` 文件
+### 2.3 配置 `.env` 文件
 
 在项目根目录创建 `.env` 文件，填入你的 API Key 和配置：
 
@@ -492,7 +486,7 @@ NANOBOT_PROXY__MODEL_INPUT=text,image
 JWT_SECRET=your-secure-random-string
 ```
 
-### 支持的模型
+### 2.4 支持的模型
 
 配置对应的 API Key 后，用户可以使用以下模型：
 
@@ -502,14 +496,17 @@ JWT_SECRET=your-secure-random-string
 | Anthropic | `claude-sonnet-4-5`, `claude-opus-4-5` | `ANTHROPIC_API_KEY` |
 | OpenAI | `gpt-4o`, `gpt-4o-mini`, `o3-mini` | `OPENAI_API_KEY` |
 | DeepSeek | `deepseek/deepseek-chat`, `deepseek/deepseek-reasoner` | `DEEPSEEK_API_KEY` |
+| MiniMax | `minimax/MiniMax-M2.7`, `minimax/MiniMax-M2.7-highspeed` | `MINIMAX_API_KEY` |
 | AiHubMix | `aihubmix/模型名` | `AIHUBMIX_API_KEY` |
 | OpenRouter | `openrouter/任意模型`（兜底） | `OPENROUTER_API_KEY` |
 
 Gateway 根据模型名自动匹配提供商并注入对应的 API Key，用户容器内不存储任何密钥。
+MiniMax 默认将 `MiniMax-M2.7` 路由到同族 highspeed 变体以降低回答等待时间；
+需要严格使用原始模型时设置 `MINIMAX_M27_USE_HIGHSPEED=false`。
 
-### 构建与启动
+### 2.5 构建与启动
 
-#### 方式1：一键部署脚本
+**方式1：一键部署脚本**
 
 ```bash
 # 准备环境（检查 Docker、下载镜像等）
@@ -518,167 +515,79 @@ python prepare.py
 # === Docker 部署（推荐） ===
 
 # 本地 Docker 部署（localhost 访问）
-python deploy_docker.py
+bash build_base_image.sh  #基础镜像先构建，构建hermes镜像，以后修改hermes下的内容，都以直接使用python deploy_docker.py进行基于基础镜像进行build就可以了,可以大大节约build的时间，每次build大概只需要1-2分钟。
+build_base_image.sh构建的是hermes-base:lastest
+python deploy_docker.py --rebuild hermes 
+它构建的是hermes_agent:latest
 
-# 重新构建指定服务, --fast表示不使用--no-cache，使用docker的缓存，当构建失败的时候，修改代码后构建更快
-python deploy_docker.py --rebuild openclaw,gateway,frontend,manage-front,simple-front --fast
+# 重新构建指定服务（Hermes 是默认底层 runtime 镜像）
+python deploy_docker.py --rebuild hermes,gateway,frontend --fast
+
+# 默认 Hermes 镜像跳过 Chromium 预装，并禁用浏览器相关 npm 安装脚本以加快构建；需要 browser 工具时显式打开
+python deploy_docker.py --rebuild hermes --with-browser
+PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright python deploy_docker.py --rebuild hermes --with-browser
+
+# 默认也跳过 WhatsApp bridge 的 GitHub npm 依赖；需要时显式打开
+HERMES_INSTALL_WHATSAPP_BRIDGE=true python deploy_docker.py --rebuild hermes
 
 # 仅重建某个服务
 python deploy_docker.py --rebuild frontend
-
-# 仅构建镜像不启动
-python deploy_docker.py --build-only
-
-# 仅重启服务
-python deploy_docker.py --restart
 
 # 完全清理重建
 python deploy_docker.py --clean
 ```
 
-> **提示**：换网不需要重新 build 前端。前端使用相对路径 `/api/...`，由 nginx 反代转发，与 IP 无关。
+# === 本地开发模式 ===
 
-#### 方式2：本地开发模式
-
-```bash
-# 启动所有本地服务（postgres + bridge + gateway + frontend dev server）
+# legacy 本地开发 helper：仍会启动 OpenClaw bridge（Docker 部署默认走 Hermes）
 python start_local.py
 
 # 仅启动部分服务
 python start_local.py --only db,gateway,frontend
 
-# 跳过某些服务
-python start_local.py --skip bridge
-
-# 停止所有服务
-python start_local.py --stop
+# 测试打包 Hermes dedicated runtime
+docker build -f hermes-agent/Dockerfile.bridge -t nanobot-hermes-agent:latest hermes-agent/
 
 # 检查服务状态
 python check_status.py
 ```
 
+> **提示**：换网不需要重新 build 前端。前端使用相对路径 `/api/...`，由 nginx 反代转发，与 IP 无关。
+
 本地测试启动后：
 
 ```
 本地开发环境已启动
-        PostgreSQL  http://127.0.0.1:5432  (存储用户表信息，参考doc/table.md)
-  OpenClaw Bridge   http://127.0.0.1:18080  (每个用户容器启动时都会创建，用于控制openclaw)
-  Platform Gateway  http://127.0.0.1:8080   # 控制openclaw的网关
-      Frontend Dev  http://127.0.0.1:3080     #用户使用界面
-      Manage Admin  http://127.0.0.1:3081  #管理界面
+        PostgreSQL  http://127.0.0.1:5432  (Docker 容器)
+  OpenClaw Bridge   http://127.0.0.1:18080  (PID xxxxx)
+  Platform Gateway  http://127.0.0.1:8080
+      Frontend Dev  http://127.0.0.1:3080
 ```
 
-#### 方式3：手动启动
-
-**1. PostgreSQL (端口 5432)**
-
-```bash
-docker run -d \
-  --name openclaw-local-postgres \
-  -e POSTGRES_USER=nanobot \
-  -e POSTGRES_PASSWORD=nanobot \
-  -e POSTGRES_DB=nanobot_platform \
-  -v openclaw-local-pgdata:/var/lib/postgresql/data \
-  -p 5432:5432 \
-  postgres:16-alpine
-```
-
-**2. OpenClaw Bridge (端口 18080)**
-
-```bash
-cd openclaw
-
-# 方式一：使用 tsx（推荐）
-tsx bridge/start.ts
-
-# 方式二：使用 npx
-npx tsx bridge/start.ts
-
-# 方式三：使用编译后的 JS
-node bridge/dist/start.js
-```
-
-**3. Platform Gateway (端口 8080)**
-
-```bash
-cd platform
-
-# 设置必要的环境变量
-export PLATFORM_DATABASE_URL="postgresql+asyncpg://nanobot:nanobot@localhost:5432/nanobot_platform"
-export PLATFORM_DEV_OPENCLAW_URL="http://127.0.0.1:18080"
-export PLATFORM_DEV_GATEWAY_URL="ws://127.0.0.1:18789"
-
-# 启动 uvicorn
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
-```
-
-> 注意：从项目根目录 .env 文件读取 *_API_KEY、*_API_BASE、JWT_SECRET、DEFAULT_MODEL 等配置。
-
-**4. Frontend Dev Server (端口 3080)**
-
-```bash
-cd frontend
-
-# 安装依赖（首次）
-npm install
-
-# 启动开发服务器
-VITE_API_URL=http://127.0.0.1:8080 npm run dev
-```
-
-#### 快速启动单个服务
-
-```bash
-# 只启动 bridge
-python start_local.py --only bridge
-
-# 启动 gateway + frontend，跳过 db
-python start_local.py --skip db,gateway
-
-# 停止所有服务
-python start_local.py --stop
-```
-
-#### 容器方式手动启动
-
-```bash
-# 1. 构建 openclaw 基础镜像（包含 openclaw + bridge）
-docker build -f openclaw/Dockerfile.bridge -t openclaw:latest openclaw/
-
-# 2. 构建并启动所有服务
-docker compose up -d --build
-
-# 查看日志
-docker compose logs -f
-```
-
-> **注意**：前端使用相对路径 `/api/...` 访问后端，由 nginx 反代到 gateway 容器。
-> 换网或更换 IP **不需要重新 build 前端**。
-
-### 使用
+### 2.6 使用
 
 1. 打开浏览器访问 `http://localhost:3080`
 2. 注册账号并登录
-3. 开始聊天 — Gateway 会自动为你创建隔离的 OpenClaw 容器
+3. 开始聊天 — Gateway 会自动为你创建隔离的 Hermes 容器
 
-### 服务端口
+### 2.7 服务端口
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
 | Frontend | 3080 (映射 3000) | Web 界面 |
 | Gateway | 8080 | API 网关（浏览器直接请求） |
 | PostgreSQL | 15432 (映射 5432) | 内部数据库 |
-| OpenClaw Bridge (容器内) | 18080 | 容器对外 HTTP + WS |
-| OpenClaw Gateway (容器内) | 18789 | 容器内部 Agent 引擎 (loopback) |
+| Hermes Runtime (dedicated 容器内) | 18080 | 容器对外 HTTP + SSE |
+| Hermes Runtime (shared 容器内) | 8080 | shared runtime API |
 
-### 数据持久化
+### 2.8 数据持久化
 
 | 数据 | 存储方式 |
 |------|---------|
 | 用户账户、配额、容器元数据 | PostgreSQL（`pgdata` volume） |
 | 用户工作区和会话 | Docker named volumes + `/data/openclaw-users` |
 
-### 常用运维命令
+### 2.9 常用运维命令
 
 ```bash
 # 查看所有容器
@@ -700,49 +609,18 @@ docker rm -f $(docker ps -a --filter "name=openclaw-user-" -q) 2>/dev/null
 
 ---
 
-## 💻 单用户本地运行（测试）
-
-适合个人使用或者测试，无需完整多租户架构。
-
-### 运行
-
-```bash
-# 启动所有本地服务（推荐）
-python start_local.py
-
-# 或手动分别启动：
-# 1. PostgreSQL
-docker run -d --name postgres \
-  -e POSTGRES_USER=nanobot \
-  -e POSTGRES_PASSWORD=nanobot \
-  -e POSTGRES_DB=nanobot_platform \
-  -v pgdata:/var/lib/postgresql/data \
-  -p 5432:5432 \
-  postgres:16-alpine
-
-# 2. Platform Gateway
-cd platform
-export PLATFORM_DATABASE_URL="postgresql+asyncpg://nanobot:nanobot@localhost:5432/nanobot_platform"
-python -m app.main
-
-# 3. Frontend
-cd frontend && npm run dev
-```
-
----
-
-## 🏗️ 整体架构
+## 4. 整体架构
 
 ```
                         ┌──────────────────────┐
                         │   浏览器 (Frontend)    │
-                        │   Vite+React :3080    │
+                        │   Vite+React :3080        │
                         └──────────┬───────────┘
                                    │ HTTP + WebSocket
                                    v
                         ┌──────────────────────┐
                         │  Platform Gateway     │
-                        │  FastAPI :8080        │
+                        │  FastAPI :8080         │
                         │  ┌────────────────┐   │
                         │  │ Auth (JWT)      │   │
                         │  │ Container Mgr   │   │
@@ -783,9 +661,9 @@ cd frontend && npm run dev
 
 ---
 
-## 🔧 核心组件详解
+## 5. 核心组件详解
 
-### OpenClaw Agent 引擎 (`openclaw/`)
+### 5.1 OpenClaw Agent 引擎 (`openclaw/`)
 
 OpenClaw 是一个功能丰富的 AI Agent 框架（TypeScript/Node.js），核心能力包括：
 
@@ -795,7 +673,7 @@ OpenClaw 是一个功能丰富的 AI Agent 框架（TypeScript/Node.js），核�
 - **Session 管理**：对话历史持久化
 - **多 Provider 支持**：通过 OpenAI 兼容接口对接各种 LLM
 
-### Bridge 适配层 (`openclaw/bridge/`)
+### 5.2 Bridge 适配层 (`openclaw/bridge/`)
 
 Bridge 是连接平台和 OpenClaw 的关键适配层，在每个用户容器内运行：
 
@@ -818,7 +696,7 @@ Bridge 是连接平台和 OpenClaw 的关键适配层，在每个用户容器内
 6. 启动 HTTP 服务器（0.0.0.0:18080），对外暴露 API
 ```
 
-### Platform Gateway (`platform/`)
+### 5.3 Platform Gateway (`platform/`)
 
 Python FastAPI 应用，是整个平台的控制中心：
 
@@ -845,7 +723,7 @@ Python FastAPI 应用，是整个平台的控制中心：
 用户删除    → destroy（移除容器，保留数据 Volume）
 ```
 
-### LLM 代理机制
+### 5.4 LLM 代理机制
 
 容器内的 OpenClaw 调用 LLM 时，不直接访问 LLM API，而是请求 Gateway 代理：
 
@@ -864,7 +742,7 @@ Gateway 处理：
   6. 记录 Token 用量
 ```
 
-### Skills 系统
+### 5.5 Skills 系统
 
 技能文件位于 `openclaw/skills/`，每个技能是一个包含 `SKILL.md` 的目录。用户也可以在自己的工作区中创建自定义技能。
 
@@ -877,7 +755,7 @@ Gateway 处理：
 
 ---
 
-## 🔒 安全设计
+## 6. 安全设计
 
 | 层面 | 措施 |
 |------|------|
@@ -890,11 +768,11 @@ Gateway 处理：
 
 ---
 
-## 🎨 前端
+## 7. 前端
 
 Vite + React Router 单页应用，暗色主题，位于 `frontend/` 目录。
 
-### 技术栈
+### 7.1 技术栈
 
 | 技术 | 用途 |
 |------|------|
@@ -950,7 +828,7 @@ frontend/
         └── SystemSettings.tsx   # 系统设置
 ```
 
-### 页面路由
+### 7.3 页面路由
 
 | 路由 | 页面文件 | 功能 |
 |------|---------|------|
@@ -972,13 +850,13 @@ frontend/
 | `/audit` | `AuditLog.tsx` | 审计日志 |
 | `/settings` | `SystemSettings.tsx` | 系统设置 |
 
-### 网络请求
+### 7.4 网络请求
 
 - **生产环境**：前端通过 nginx 反代 `/api/*` 到 gateway 容器，无需硬编码 IP
 - **开发环境**：Vite 代理 `/api/*` 到 `http://localhost:8080`
 - **换网不需要重新 build**：前端使用相对路径 `/api/...`，由反代负责转发
 
-### WebSocket 协议
+### 7.5 WebSocket 协议
 
 **前端 → Gateway → Bridge → OpenClaw Gateway**（逐层代理）
 
@@ -995,9 +873,9 @@ frontend/
 
 ---
 
-## 📦 deploy_copy — 预置 Agent 与技能
+## 8. deploy_copy — 预置 Agent 与技能
 
-### 目录结构
+### 8.1 目录结构
 
 ```
 deploy_copy/

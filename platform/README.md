@@ -1,6 +1,6 @@
-# OpenClaw Platform
+# Hermes Platform
 
-OpenClaw Platform 是一个基于 FastAPI 的多租户网关服务，用于管理和运行 OpenClaw 实例。
+Hermes Platform 是一个基于 FastAPI 的多租户网关服务，用于管理用户、配额和 runtime 容器。当前默认 runtime backend 是 Hermes Agent，同时保留 OpenClaw-compatible API 路径和 OpenClaw fallback 配置。
 
 ## 功能特性
 
@@ -21,8 +21,8 @@ OpenClaw Platform 是一个基于 FastAPI 的多租户网关服务，用于管�
 
 ```
 ┌─────────────┐     ┌─────────────────┐     ┌──────────────────┐
-│   Client    │────▶│  Platform API   │────▶│  User Container   │
-│  (Frontend) │     │   (port 8080)    │     │  (openclaw web)   │
+│   Client    │────▶│  Platform API   │────▶│  Runtime Container│
+│  (Frontend) │     │   (port 8080)    │     │  (Hermes default) │
 └─────────────┘     └────────┬────────┘     └──────────────────┘
                              │
                              ▼
@@ -45,7 +45,8 @@ OpenClaw Platform 是一个基于 FastAPI 的多租户网关服务，用于管�
 | `PUT /api/admin/users/{user_id}` | 管理员更新用户 |
 | `DELETE /api/admin/users/{user_id}/container` | 管理员删除用户容器 |
 | `GET /api/admin/usage/summary` | 平台使用统计 |
-| `/api/openclaw/*` | 代理到 OpenClaw Gateway（见 platform/app/routes/proxy.py） |
+| `/api/openclaw/*` | dedicated 兼容 API，默认转到 Hermes runtime backend |
+| `/api/shared-openclaw/*` | shared 兼容 API，默认转到 Hermes shared runtime |
 
 ## 配置说明
 
@@ -56,9 +57,13 @@ OpenClaw Platform 是一个基于 FastAPI 的多租户网关服务，用于管�
 | `PLATFORM_DATABASE_URL` | `postgresql+asyncpg://nanobot:nanobot@localhost:5432/nanobot_platform` | 数据库连接 |
 | `PLATFORM_JWT_SECRET` | `change-me-in-production` | JWT 密钥 |
 | `PLATFORM_DEFAULT_MODEL` | `claude-sonnet-4-5` | 新用户默认模型 |
-| `PLATFORM_OPENCLAW_IMAGE` | `openclaw:latest` | Docker 镜像 |
-| `PLATFORM_CONTAINER_MEMORY_LIMIT` | `512m` | 容器内存限制 |
-| `PLATFORM_QUOTA_FREE` | `100000` | 免费用户每日配额 |
+| `PLATFORM_DEDICATED_RUNTIME_BACKEND` | `hermes` | dedicated 用户容器 runtime，可显式切回 `openclaw` |
+| `PLATFORM_SHARED_RUNTIME_BACKEND` | `hermes` | shared runtime backend，可显式切回 `openclaw` |
+| `PLATFORM_HERMES_IMAGE` | `nanobot-hermes-agent:latest` | dedicated Hermes runtime Docker 镜像 |
+| `PLATFORM_OPENCLAW_IMAGE` | `openclaw:latest` | OpenClaw fallback Docker 镜像 |
+| `PLATFORM_SHARED_HERMES_URL` | `http://shared-openclaw:8080` | shared Hermes runtime API 地址 |
+| `PLATFORM_CONTAINER_MEMORY_LIMIT` | `2g` | 容器内存限制 |
+| `PLATFORM_QUOTA_FREE` | `20000000` | 免费用户每日配额 |
 
 ## 数据模型
 
@@ -92,17 +97,17 @@ docker-compose up -d platform
 
 当前端请求 `http://<host>:8080/api/openclaw/sessions/web%3Adefault` 时：
 
-1. **入口：proxy.py**
-   请求首先到达 `platform/app/routes/proxy.py` 的 `proxy_http` 函数：
+1. **入口：OpenClaw-compatible API**
+   已适配的 chat/session/run 请求首先到达 `platform/app/api_compat/openclaw_compat.py`，再由 `platform/app/runtime_router.py` 按用户 runtime mode 和配置选择 Hermes 或 OpenClaw backend。未适配的 legacy 路径仍会落到 `platform/app/routes/proxy.py`。
 
    ```python
-   @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-   async def proxy_http(path: str, ...):
-       base_url = await _container_url(db, user)  # <-- 关键步骤
+   @router.post("/api/openclaw/sessions/{session_key:path}/messages")
+   async def send_dedicated_message(...):
+       backend = get_runtime_backend(user)  # <-- 关键步骤
    ```
 
-2. **容器状态检查：ensure_running**
-   `_container_url` 调用 `ensure_running` 函数（`platform/app/container/manager.py`），这个函数会：
+2. **dedicated 容器状态检查：ensure_running**
+   dedicated Hermes backend 会调用 `ensure_running` 函数（`platform/app/container/manager.py`），这个函数会：
 
    1. 从数据库查询容器记录 - 检查该用户是否有容器记录
    2. 根据状态处理：

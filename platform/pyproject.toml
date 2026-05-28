@@ -17,10 +17,13 @@ dependencies = [
     "bcrypt>=4.0.0",
     "docker>=7.0.0",
     "httpx>=0.25.0",
+    "pypdf>=5.0.0",
+    "python-pptx>=1.0.0",
     "websockets>=12.0",
     "litellm>=1.0",
     "python-multipart>=0.0.9",
     "kubernetes>=28.0.0",
+    "openai",
 ]
 
 [project.optional-dependencies]

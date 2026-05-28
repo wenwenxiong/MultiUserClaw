@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     minimax_api_key: str = ""
     minimax_api_base: str = "https://api.minimax.io/v1"
+    minimax_m27_use_highspeed: bool = True
     aihubmix_api_key: str = ""
     moonshot_api_key: str = ""
     kimi_api_key: str = ""
@@ -37,15 +38,35 @@ class Settings(BaseSettings):
     # Default model for new users
     default_model: str = "claude-sonnet-4-5"
 
-    # Docker
+    # Runtime backend selection
+    dedicated_runtime_backend: str = "hermes"
+    hermes_connect_retries: int = 60
+    hermes_retry_delay_seconds: float = 0.5
+    hermes_api_toolsets: str = "terminal,file,skills"
+    hermes_reasoning_effort: str = "none"
+    hermes_service_tier: str = ""
+
+    # Dedicated runtime endpoints/images
     openclaw_image: str = "openclaw:latest"
+    hermes_image: str = "nanobot-hermes-agent:latest"
+    dedicated_hermes_url: str = ""
+    dedicated_hermes_internal_port: int = 18080
+    dedicated_hermes_api_key: str = "dev-hermes-bridge-key"
+    dedicated_hermes_default_provider: str = "custom"
+    dedicated_hermes_default_base_url: str = "http://gateway:8080/llm/v1"
+    dedicated_hermes_default_api_key: str = "platform-proxy"
+    dedicated_runtime_container_name_prefix: str = "hermes-user"
+    dedicated_runtime_data_volume_prefix: str = "hermes-data"
     container_network: str = "openclaw-internal"
 
+<<<<<<< HEAD
     # Shared OpenClaw runtime，共享openclaw容器时的参数
     shared_openclaw_enabled: bool = True
     shared_openclaw_url: str = "http://shared-openclaw-service.openclaw-system.svc.cluster.local:18080"
     shared_openclaw_timeout_seconds: int = 120
     shared_openclaw_system_token: str = ""
+=======
+>>>>>>> upstream/main
     user_container_publish_ports: bool = True
     user_container_bind_ip: str = "0.0.0.0"
     container_tz: str = "Asia/Shanghai"
@@ -68,7 +89,6 @@ class Settings(BaseSettings):
 
     # 建议增加 shm（非常重要，防止 Chromium 崩溃）
     container_shm_size: str = "1g"
-    container_data_dir: str = "/data/openclaw-users"
 
     # Idle management
     container_idle_pause_minutes: int = 30
@@ -86,15 +106,27 @@ class Settings(BaseSettings):
     # Platform gateway
     host: str = "0.0.0.0"
     port: int = 8080
+    log_level: str = "INFO"
 
     # Public-facing base URL (used to generate external access URLs in port mapping)
-    public_base_url: str = "http://www.exmaple.com"
+    public_base_url: str = "http://openclaw.infox-med.com"
+
+    # Skills marketplace (Gitee repo with categories)
+    skills_marketplace_repo: str = "https://github.com/johnson7788/collect_skills.git"
+    skills_marketplace_branch: str = "main"
 
     # Local dev: set to e.g. "http://127.0.0.1:18080" to skip Docker containers
     dev_openclaw_url: str = ""
 
     # Local dev: OpenClaw Gateway WS URL for direct WS proxy (e.g. "ws://127.0.0.1:18789")
     dev_gateway_url: str = ""
+
+    # Local training trace capture, disabled by default.
+    training_trace_enabled: bool = False
+    training_trace_ingest_enabled: bool = False
+    training_trace_ingest_token: str = ""
+    training_trace_dir: str = ".hermes/training_traces"
+    training_trace_hash_salt: str = ""
 
     model_config = {"env_prefix": "PLATFORM_"}
 
